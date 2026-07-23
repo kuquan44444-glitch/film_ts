@@ -1,17 +1,22 @@
 import classNames from 'classnames'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Helmet } from 'react-helmet-async'
 import { useQuery } from 'react-query'
 import { Link, createSearchParams, useParams } from 'react-router-dom'
 import filmApis from 'src/apis/filmApis'
 import { useQueryConfig } from 'src/hooks'
+import { episodeData, episodeServer } from 'src/types'
 import PATH from 'src/utils/path'
 import FacebookShareButton from 'react-share/es/FacebookShareButton'
 
 const Film = () => {
   const queryConfig = useQueryConfig()
   const [nameServer, setNameServer] = useState<string>('')
-  const [episode, setEpisode] = useState<string>('')
+  const [episodeSlug, setEpisodeSlug] = useState<string>('')
+  const [playerMessage, setPlayerMessage] = useState<string>('')
+  const [isPlayerLoading, setIsPlayerLoading] = useState<boolean>(false)
+  const [attemptedServers, setAttemptedServers] = useState<string[]>([])
+  const fallbackTimerRef = useRef<number>()
   const { slug } = useParams()
   const { data } = useQuery({
     queryKey: [slug],
@@ -20,20 +25,117 @@ const Film = () => {
     enabled: slug !== ''
   })
   const dataFilm = data?.data.data
+  const servers = useMemo(() => dataFilm?.item.episodes ?? [], [dataFilm])
+  const selectedServer = useMemo(
+    () => servers.find((item) => item.server_name === nameServer) ?? servers[0],
+    [nameServer, servers]
+  )
+  const selectedEpisode = useMemo(() => {
+    if (!selectedServer) return undefined
+    return selectedServer.server_data.find((item) => item.slug === episodeSlug) ?? selectedServer.server_data[0]
+  }, [episodeSlug, selectedServer])
+  const currentEpisodeUrl = selectedEpisode?.link_embed || selectedEpisode?.link_m3u8 || ''
+
+  const clearFallbackTimer = useCallback(() => {
+    if (fallbackTimerRef.current) {
+      window.clearTimeout(fallbackTimerRef.current)
+    }
+  }, [])
+
+  const getEpisodeForServer = useCallback((server: episodeServer, preferredEpisode?: episodeData) => {
+    if (!preferredEpisode) return server.server_data[0]
+
+    return (
+      server.server_data.find(
+        (item) =>
+          item.slug === preferredEpisode.slug ||
+          item.name === preferredEpisode.name ||
+          item.filename === preferredEpisode.filename
+      ) ?? server.server_data[0]
+    )
+  }, [])
+
+  const activateServer = useCallback(
+    (
+      server: episodeServer,
+      options?: {
+        preferredEpisode?: episodeData
+        resetAttempts?: boolean
+        message?: string
+      }
+    ) => {
+      const nextEpisode = getEpisodeForServer(server, options?.preferredEpisode)
+      clearFallbackTimer()
+      setNameServer(server.server_name)
+      setEpisodeSlug(nextEpisode?.slug || '')
+      setPlayerMessage(options?.message || `Đang phát bằng ${server.source_label} - ${server.original_server_name}`)
+      setAttemptedServers((previous) => {
+        if (options?.resetAttempts) return [server.server_name]
+        return Array.from(new Set([...previous, server.server_name]))
+      })
+    },
+    [clearFallbackTimer, getEpisodeForServer]
+  )
+
+  const handleFallback = useCallback(
+    (reason: string) => {
+      if (!servers.length) return
+
+      const nextServer = servers.find((server) => !attemptedServers.includes(server.server_name))
+
+      if (!nextServer) {
+        clearFallbackTimer()
+        setIsPlayerLoading(false)
+        setPlayerMessage(`${reason}. Không còn nguồn dự phòng khả dụng, hãy thử đổi nguồn thủ công.`)
+        return
+      }
+
+      activateServer(nextServer, {
+        preferredEpisode: selectedEpisode,
+        message: `${reason}. Đang tự chuyển sang ${nextServer.source_label} - ${nextServer.original_server_name}`
+      })
+    },
+    [activateServer, attemptedServers, clearFallbackTimer, selectedEpisode, servers]
+  )
 
   useEffect(() => {
-    if (dataFilm) {
-      setNameServer(dataFilm.item.episodes[0].server_name)
+    if (servers.length && !nameServer) {
+      activateServer(servers[0], {
+        resetAttempts: true,
+        message: `Đang ưu tiên nguồn ${servers[0].source_label} - ${servers[0].original_server_name}`
+      })
     }
-  }, [dataFilm])
+  }, [activateServer, nameServer, servers])
 
   useEffect(() => {
-    if (dataFilm && nameServer) {
-      setEpisode(
-        dataFilm.item.episodes.find((item) => item.server_name === nameServer)?.server_data[0].link_embed as string
-      )
+    if (!selectedServer) return
+
+    const nextEpisode =
+      selectedServer.server_data.find((item) => item.slug === episodeSlug) ?? selectedServer.server_data[0]
+
+    if (nextEpisode && episodeSlug !== nextEpisode.slug) {
+      setEpisodeSlug(nextEpisode.slug)
     }
-  }, [dataFilm, nameServer])
+  }, [episodeSlug, selectedServer])
+
+  useEffect(() => {
+    if (!currentEpisodeUrl) {
+      if (selectedServer) {
+        handleFallback('Nguồn hiện tại không có link phát hợp lệ')
+      }
+      return
+    }
+
+    setIsPlayerLoading(true)
+    clearFallbackTimer()
+    fallbackTimerRef.current = window.setTimeout(() => {
+      handleFallback('Nguồn hiện tại phản hồi chậm hoặc lỗi')
+    }, 12000)
+
+    return () => {
+      clearFallbackTimer()
+    }
+  }, [clearFallbackTimer, currentEpisodeUrl, handleFallback, selectedServer])
 
   if (!dataFilm) return null
 
@@ -45,41 +147,76 @@ const Film = () => {
       </Helmet>
       <div>
         <div className='relative w-full h-[36vh] sm:h-[56vh] md:h-[66vh] lg:h-[76vh] xl:h-[86vh] bg-black'>
+          {isPlayerLoading && (
+            <div className='absolute inset-0 z-10 flex items-center justify-center bg-black/40 text-white'>
+              Đang tải nguồn phát...
+            </div>
+          )}
           <iframe
             className='w-full h-full'
             title={dataFilm.item.name}
-            src={episode}
+            src={currentEpisodeUrl}
             frameBorder={0}
             loading='eager'
+            onLoad={() => {
+              clearFallbackTimer()
+              setIsPlayerLoading(false)
+              if (selectedServer) {
+                setPlayerMessage(
+                  `Đang phát bằng ${selectedServer.source_label} - ${selectedServer.original_server_name}`
+                )
+              }
+            }}
+            onError={() => handleFallback('Nguồn hiện tại phát sinh lỗi')}
             allowFullScreen
           ></iframe>
         </div>
+        <div className='container mt-4 px-4'>
+          <div className='rounded-md border border-white/10 bg-[#0e274073] p-3 text-sm text-white/80'>
+            {playerMessage || 'Đang chuẩn bị nguồn phát tự động.'}
+          </div>
+        </div>
         <div className='mt-6 flex items-center justify-center gap-2'>
-          {dataFilm.item.episodes.map((item) => (
+          {servers.map((item) => (
             <button
-              title={`Server ${item.server_name}`}
-              onClick={() => setNameServer(item.server_name)}
+              title={`${item.server_name} - ${item.source_label}`}
+              onClick={() =>
+                activateServer(item, {
+                  preferredEpisode: selectedEpisode,
+                  resetAttempts: true,
+                  message: `Đã chuyển sang ${item.source_label} - ${item.original_server_name}`
+                })
+              }
               key={item.server_name}
-              className={classNames('rounded px-2 py-1 flex items-center justify-center gap-1 font-medium', {
+              className={classNames('rounded px-3 py-2 flex flex-col items-center justify-center gap-1 font-medium', {
                 'bg-white/40': item.server_name === nameServer,
                 'bg-white': item.server_name !== nameServer
               })}
             >
-              {item.server_name === nameServer && (
-                <svg
-                  xmlns='http://www.w3.org/2000/svg'
-                  fill='none'
-                  viewBox='0 0 24 24'
-                  strokeWidth={3}
-                  stroke='currentColor'
-                  className='w-4 h-4 stroke-green-500 -ml-1'
-                >
-                  <path strokeLinecap='round' strokeLinejoin='round' d='M4.5 12.75l6 6 9-13.5' />
-                </svg>
-              )}
-              {item.server_name}
+              <span className='flex items-center justify-center gap-1'>
+                {item.server_name === nameServer && (
+                  <svg
+                    xmlns='http://www.w3.org/2000/svg'
+                    fill='none'
+                    viewBox='0 0 24 24'
+                    strokeWidth={3}
+                    stroke='currentColor'
+                    className='w-4 h-4 stroke-green-500 -ml-1'
+                  >
+                    <path strokeLinecap='round' strokeLinejoin='round' d='M4.5 12.75l6 6 9-13.5' />
+                  </svg>
+                )}
+                {item.server_name}
+              </span>
+              <span className='text-xs text-black/70'>{item.source_label}</span>
             </button>
           ))}
+        </div>
+        <div className='container px-4 mt-2'>
+          <p className='text-sm text-white/60'>
+            Có thể đổi nguồn thủ công khi lag hoặc lỗi. Hệ thống sẽ tự nhảy sang nguồn kế tiếp nếu nguồn hiện tại phản
+            hồi chậm.
+          </p>
         </div>
         <div className='container px-4 mt-6'>
           <div className='block md:flex items-center justify-between mb-10'>
@@ -87,7 +224,7 @@ const Film = () => {
               <h1 title={dataFilm.item.origin_name} className='text-white text-5xl font-heading1 leading-[45px] mb-3'>
                 {dataFilm.item.origin_name}
               </h1>
-              <h2 title={dataFilm.item.name} className='text-[#b5b5b5] text-2xl break-all leading-[30px] mb-6'>
+              <h2 title={dataFilm.item.name} className='text-[#b5b5b5] text-2xl break-all leading-[30px] mb-2'>
                 {dataFilm.item.name} (
                 <Link
                   title={`Tìm kiếm ${dataFilm.item.year}`}
@@ -104,6 +241,9 @@ const Film = () => {
                 </Link>
                 )
               </h2>
+              <p className='mb-6 text-sm text-white/60'>
+                Nguồn hiện có: {dataFilm.item.available_sources.map((item) => item.label).join(' • ')}
+              </p>
               <FacebookShareButton url={`https://vphim.vercel.app/${PATH.film}/${slug}`}>
                 <div
                   title='Chia sẻ phim miễn phí với Facebook'
@@ -127,25 +267,27 @@ const Film = () => {
             </Link>
           </div>
           <div className='flex items-center flex-wrap gap-x-3 gap-y-4 max-h-[250px] overflow-auto pb-2 pr-[6px]'>
-            {dataFilm.item.episodes
-              .find((item) => item.server_name === nameServer)
-              ?.server_data.map((item, index) => (
-                <button
-                  title={`Tập ${item.name}`}
-                  onClick={() => setEpisode(item.link_embed)}
-                  disabled={item.link_embed === episode}
-                  key={index}
-                  className={classNames(
-                    'flex-shrink-0 text-white whitespace-nowrap overflow-hidden text-lg min-w-[99px] h-[40px] px-4 rounded',
-                    {
-                      'bg-green-400': item.link_embed !== episode,
-                      'bg-green-400/40': item.link_embed === episode
-                    }
-                  )}
-                >
-                  Tập {item.name}
-                </button>
-              ))}
+            {selectedServer?.server_data.map((item, index) => (
+              <button
+                title={`Tập ${item.name}`}
+                onClick={() => {
+                  setEpisodeSlug(item.slug)
+                  setAttemptedServers([selectedServer.server_name])
+                  setPlayerMessage(`Đã đổi tập ${item.name} trên ${selectedServer.source_label}`)
+                }}
+                disabled={item.slug === selectedEpisode?.slug}
+                key={index}
+                className={classNames(
+                  'flex-shrink-0 text-white whitespace-nowrap overflow-hidden text-lg min-w-[99px] h-[40px] px-4 rounded',
+                  {
+                    'bg-green-400': item.slug !== selectedEpisode?.slug,
+                    'bg-green-400/40': item.slug === selectedEpisode?.slug
+                  }
+                )}
+              >
+                Tập {item.name}
+              </button>
+            ))}
           </div>
         </div>
       </div>

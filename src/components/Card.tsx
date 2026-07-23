@@ -1,18 +1,19 @@
 import { Link } from 'react-router-dom'
 import { items } from 'src/types'
 import PATH from 'src/utils/path'
+import SmartImage from './SmartImage'
 
 const Card = ({ data }: { data?: items }) => {
   return (
     <>
       {data ? (
         <Link to={`${PATH.film}/${data.slug}`} className='relative' title={data.name}>
-          <img
+          <SmartImage
             sizes='(max-width: 256px)'
-            srcSet={`https://img.ophim1.com/uploads/movies/${data.thumb_url} 256w`}
+            candidates={data.image_urls.thumb}
             title={data.name}
             width={256}
-            src={`https://img.ophim1.com/uploads/movies/${data.thumb_url}`}
+            src={data.thumb_url}
             alt={data.name}
             className='h-[290px] sm:h-[384px] w-full object-cover mb-1'
           />
