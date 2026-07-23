@@ -128,6 +128,20 @@ const slugify = (value: string) =>
 
 const cleanServerName = (value: string) => value.replace(/\s+/g, ' ').trim()
 
+const splitSearchVariants = (value: string) => {
+  const trimmedValue = toStringValue(value).trim()
+  if (!trimmedValue) return []
+
+  return uniqueStrings([
+    trimmedValue,
+    trimmedValue.replace(/\s*\([^)]*\)\s*/g, ' ').trim(),
+    ...trimmedValue
+      .split(/[()/|-]/g)
+      .map((segment) => segment.trim())
+      .filter(Boolean)
+  ])
+}
+
 const joinUrl = (base: string, path: string) => {
   if (!path) return ''
   if (/^https?:\/\//i.test(path)) return path
@@ -547,6 +561,20 @@ const normalizeFilmResponse = ({
   }
 }
 
+const buildAlternativeKeywords = (baseItem: film['item']) =>
+  uniqueStrings([
+    baseItem.name,
+    baseItem.origin_name,
+    ...splitSearchVariants(baseItem.name),
+    ...splitSearchVariants(baseItem.origin_name)
+  ])
+
+const buildAlternativeSlugCandidates = (baseItem: film['item']) =>
+  uniqueStrings([
+    baseItem.slug,
+    ...buildAlternativeKeywords(baseItem).map((keyword) => slugify(keyword))
+  ])
+
 const getFilmByProvider = async (provider: ProviderConfig, slug: string) => {
   const response = await clients[provider.key].get<Record<string, unknown>>(getProviderFilmEndpoint(provider.key, slug))
   return normalizeFilmResponse({
@@ -615,9 +643,21 @@ const scoreFilmCandidate = (
 }
 
 const findAlternativeFilmForProvider = async (provider: ProviderConfig, baseItem: film['item']) => {
-  const keywords = uniqueStrings([baseItem.origin_name, baseItem.name])
+  const keywords = buildAlternativeKeywords(baseItem)
+  const slugCandidates = buildAlternativeSlugCandidates(baseItem)
   let bestMatch: items | null = null
   let bestScore = 0
+
+  for (const candidateSlug of slugCandidates) {
+    try {
+      const matchedFilm = await getFilmByProvider(provider, candidateSlug)
+      if (scoreFilmCandidate(baseItem, matchedFilm.item) >= 90) {
+        return matchedFilm
+      }
+    } catch {
+      continue
+    }
+  }
 
   for (const keyword of keywords) {
     try {
@@ -706,7 +746,7 @@ const mergeFilmData = (films: film[]) => {
 }
 
 const getProviderSearchEndpoint = (provider: movieSource) => {
-  if (provider === 'kkphim') return '/v1/api/tim-kiem'
+  if (provider === 'ophim' || provider === 'kkphim') return '/v1/api/tim-kiem'
   if (provider === 'nguonc') return '/films/search'
   return '/tim-kiem'
 }
