@@ -2,6 +2,7 @@ import DOMPurify from 'dompurify'
 import { useQuery } from 'react-query'
 import { Link, createSearchParams, useParams } from 'react-router-dom'
 import filmApis from 'src/apis/filmApis'
+import { SmartImage } from 'src/components'
 import { useQueryConfig } from 'src/hooks'
 import PATH from 'src/utils/path'
 import { Fragment, useState } from 'react'
@@ -27,20 +28,22 @@ const Detail = () => {
         <title>{`VPhim | ${dataFilm?.seoOnPage.titleHead}`}</title>
         <meta name='description' content={`${dataFilm?.seoOnPage.descriptionHead} | Xem phim miễn phí tại VPhim`} />
       </Helmet>
-      <div
-        className='h-[600px] -mt-[56px] bg-cover bg-no-repeat bg-[50%_0] relative before:content-[""] before:absolute before:w-full before:top-0 before:bottom-0 before:bg-[#020d18bf]'
-        style={{
-          backgroundImage: `url('https://img.ophim1.com/uploads/movies/${dataFilm.item.poster_url}')`
-        }}
-      />
+      <div className='h-[600px] -mt-[56px] relative overflow-hidden before:content-[""] before:absolute before:inset-0 before:bg-[#020d18bf] before:z-[1]'>
+        <SmartImage
+          src={dataFilm.item.poster_url}
+          candidates={dataFilm.item.image_urls.poster}
+          alt={dataFilm.item.name}
+          className='absolute inset-0 h-full w-full object-cover'
+        />
+      </div>
       <div className='container px-4 -mt-[360px] pt-3 relative z-10'>
         <div className='flex-col md:flex-row flex gap-11 md:gap-[64px]'>
           <div className='flex-shrink-0 flex flex-col items-center'>
-            <img
+            <SmartImage
               title={dataFilm.item.name}
               sizes='(max-width: 282px)'
-              src={`https://img.ophim1.com/uploads/movies/${dataFilm.item.thumb_url}`}
-              srcSet={`https://img.ophim1.com/uploads/movies/${dataFilm.item.thumb_url} 282px`}
+              src={dataFilm.item.thumb_url}
+              candidates={dataFilm.item.image_urls.thumb}
               width={282}
               alt={dataFilm.item.name}
               className='w-[282px] h-[432px] object-cover'
@@ -76,6 +79,9 @@ const Detail = () => {
             <h2 title={dataFilm.item.name} className='text-[#b5b5b5] text-2xl break-all leading-[30px] mb-8'>
               {dataFilm.item.name} (<strong className='text-[#428bca]'>{dataFilm.item.year}</strong>)
             </h2>
+            <p className='mb-6 text-sm text-white/60'>
+              Nguồn dữ liệu: {dataFilm.item.available_sources.map((item) => item.label).join(' • ')}
+            </p>
             <span
               title={`Thời lượng phim ${dataFilm.item.time}`}
               className='inline-block cursor-help mb-8 md:mb-10 text-white text-lg'

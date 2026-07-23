@@ -4,6 +4,25 @@ export interface data<Data> {
   data: Data
 }
 
+export type movieSource = 'ophim' | 'kkphim' | 'vsmov' | 'nguonc'
+
+export type taxonomyItem = {
+  id: string
+  name: string
+  slug: string
+}
+
+export type sourceLink = {
+  source: movieSource
+  label: string
+  slug: string
+}
+
+export type imageSet = {
+  thumb: string[]
+  poster: string[]
+}
+
 export type option = {
   items: { name: string; slug: string; _id: string }[]
 }
@@ -26,16 +45,19 @@ export type items = {
   quality: string
   lang: string
   year: number
-  category: {
-    id: string
-    name: string
-    slug: string
-  }[]
-  country: {
-    id: string
-    name: string
-    slug: string
-  }[]
+  category: taxonomyItem[]
+  country: taxonomyItem[]
+  source: movieSource
+  source_label: string
+  image_urls: imageSet
+  source_slugs?: Partial<Record<movieSource, string>>
+}
+
+export type paginationInfo = {
+  totalItems: number
+  totalItemsPerPage: number
+  currentPage: number
+  pageRanges: number
 }
 
 export type list = {
@@ -43,7 +65,7 @@ export type list = {
     og_type: string
     titleHead: string
     descriptionHead: string
-    og_image: [string]
+    og_image: string[]
     og_url: string
   }
   breadCrumb: {
@@ -62,13 +84,25 @@ export type list = {
     filterType: string
     sortField: string
     sortType: string
-    pagination: {
-      totalItems: number
-      totalItemsPerPage: number
-      currentPage: number
-      pageRanges: number
-    }
+    pagination: paginationInfo
   }
+}
+
+export type episodeData = {
+  name: string
+  slug: string
+  filename: string
+  link_embed: string
+  link_m3u8: string
+}
+
+export type episodeServer = {
+  server_name: string
+  original_server_name: string
+  source: movieSource
+  source_label: string
+  priority: number
+  server_data: episodeData[]
 }
 
 export type film = {
@@ -129,25 +163,13 @@ export type film = {
     view: number
     actor: string[]
     director: string[]
-    category: {
-      id: string
-      name: string
-      slug: string
-    }[]
-    country: {
-      id: string
-      name: string
-      slug: string
-    }[]
-    episodes: {
-      server_name: string
-      server_data: {
-        name: string
-        slug: string
-        filename: string
-        link_embed: string
-        link_m3u8: string
-      }[]
-    }[]
+    category: taxonomyItem[]
+    country: taxonomyItem[]
+    source: movieSource
+    source_label: string
+    image_urls: imageSet
+    available_sources: sourceLink[]
+    source_slugs?: Partial<Record<movieSource, string>>
+    episodes: episodeServer[]
   }
 }
