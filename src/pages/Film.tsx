@@ -31,6 +31,31 @@ let hlsScriptPromise: Promise<HlsConstructor | null> | null = null
 const DEFAULT_PLAYER_MESSAGE = 'Đang chuẩn bị phát phim.'
 const PLAYER_READY_MESSAGE = 'Đang phát phim.'
 const PLAYER_LOADING_MESSAGE = 'Đang tải phim...'
+const PLAYBACK_TIMEOUT_MS = 12000
+const PLAYBACK_STALL_MS = 8000
+const PLAYBACK_STALL_CHECK_INTERVAL_MS = 2000
+
+const getPreferredServerStorageKey = (slug: string) => `vphim-preferred-server:${slug}`
+
+const loadPreferredServerName = (slug?: string) => {
+  if (typeof window === 'undefined' || !slug) return ''
+
+  try {
+    return window.localStorage.getItem(getPreferredServerStorageKey(slug)) || ''
+  } catch {
+    return ''
+  }
+}
+
+const savePreferredServerName = (slug: string, serverName: string) => {
+  if (typeof window === 'undefined' || !slug || !serverName) return
+
+  try {
+    window.localStorage.setItem(getPreferredServerStorageKey(slug), serverName)
+  } catch {
+    return
+  }
+}
 
 const loadHlsConstructor = async () => {
   if (typeof window === 'undefined') return null
@@ -77,6 +102,9 @@ const Film = () => {
   const [playbackMode, setPlaybackMode] = useState<PlaybackMode>('embed')
   const [playerReloadToken, setPlayerReloadToken] = useState<number>(0)
   const fallbackTimerRef = useRef<number>()
+  const stallMonitorTimerRef = useRef<number>()
+  const lastPlaybackProgressAtRef = useRef<number>(0)
+  const lastPlaybackTimeRef = useRef<number>(0)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const hlsRef = useRef<HlsInstance | null>(null)
   const { slug } = useParams()
@@ -101,10 +129,17 @@ const Film = () => {
       ? selectedEpisode?.link_m3u8 || selectedEpisode?.link_embed || ''
       : selectedEpisode?.link_embed || selectedEpisode?.link_m3u8 || ''
   const shouldUseVideo = playbackMode === 'm3u8' && Boolean(selectedEpisode?.link_m3u8)
+  const preferredServerName = useMemo(() => loadPreferredServerName(slug), [slug])
 
   const clearFallbackTimer = useCallback(() => {
     if (fallbackTimerRef.current) {
       window.clearTimeout(fallbackTimerRef.current)
+    }
+  }, [])
+
+  const clearStallMonitorTimer = useCallback(() => {
+    if (stallMonitorTimerRef.current) {
+      window.clearInterval(stallMonitorTimerRef.current)
     }
   }, [])
 
@@ -118,6 +153,14 @@ const Film = () => {
   const bumpPlayerReloadToken = useCallback(() => {
     setPlayerReloadToken((previous) => previous + 1)
   }, [])
+
+  const markServerSuccessful = useCallback(
+    (serverName?: string) => {
+      if (!slug || !serverName) return
+      savePreferredServerName(slug, serverName)
+    },
+    [slug]
+  )
 
   const getPreferredPlaybackMode = useCallback(
     (episode?: episodeData): PlaybackMode => (episode?.link_m3u8 ? 'm3u8' : 'embed'),
@@ -147,12 +190,23 @@ const Film = () => {
       }
     ) => {
       const nextEpisode = getEpisodeForServer(server, options?.preferredEpisode)
+      const nextPlaybackMode = getPreferredPlaybackMode(nextEpisode)
+      const isSameSelection =
+        nameServer === server.server_name &&
+        episodeSlug === (nextEpisode?.slug || '') &&
+        playbackMode === nextPlaybackMode
+
+      if (isSameSelection) {
+        return
+      }
+
       clearFallbackTimer()
+      clearStallMonitorTimer()
       destroyHls()
       bumpPlayerReloadToken()
       setNameServer(server.server_name)
       setEpisodeSlug(nextEpisode?.slug || '')
-      setPlaybackMode(getPreferredPlaybackMode(nextEpisode))
+      setPlaybackMode(nextPlaybackMode)
       setIsPlayerLoading(Boolean(nextEpisode?.link_embed || nextEpisode?.link_m3u8))
       setPlayerMessage(options?.message || PLAYER_LOADING_MESSAGE)
       setAttemptedServers((previous) => {
@@ -160,7 +214,17 @@ const Film = () => {
         return Array.from(new Set([...previous, server.server_name]))
       })
     },
-    [bumpPlayerReloadToken, clearFallbackTimer, destroyHls, getEpisodeForServer, getPreferredPlaybackMode]
+    [
+      bumpPlayerReloadToken,
+      clearFallbackTimer,
+      clearStallMonitorTimer,
+      destroyHls,
+      episodeSlug,
+      getEpisodeForServer,
+      getPreferredPlaybackMode,
+      nameServer,
+      playbackMode
+    ]
   )
 
   const handleFallback = useCallback(
@@ -203,6 +267,7 @@ const Film = () => {
 
   useEffect(() => {
     clearFallbackTimer()
+    clearStallMonitorTimer()
     destroyHls()
     setNameServer('')
     setEpisodeSlug('')
@@ -211,16 +276,18 @@ const Film = () => {
     setAttemptedServers([])
     setPlaybackMode('embed')
     setPlayerReloadToken(0)
-  }, [clearFallbackTimer, destroyHls, slug])
+  }, [clearFallbackTimer, clearStallMonitorTimer, destroyHls, slug])
 
   useEffect(() => {
     if (servers.length && !nameServer) {
-      activateServer(servers[0], {
+      const preferredServer = servers.find((server) => server.server_name === preferredServerName) ?? servers[0]
+
+      activateServer(preferredServer, {
         resetAttempts: true,
         message: DEFAULT_PLAYER_MESSAGE
       })
     }
-  }, [activateServer, nameServer, servers])
+  }, [activateServer, nameServer, preferredServerName, servers])
 
   useEffect(() => {
     if (!selectedServer) return
@@ -248,7 +315,7 @@ const Film = () => {
     clearFallbackTimer()
     fallbackTimerRef.current = window.setTimeout(() => {
       handlePlaybackFailure('Lựa chọn hiện tại phản hồi chậm hoặc lỗi')
-    }, 12000)
+    }, PLAYBACK_TIMEOUT_MS)
 
     return () => {
       clearFallbackTimer()
@@ -257,12 +324,26 @@ const Film = () => {
 
   useEffect(() => {
     if (!shouldUseVideo || !selectedEpisode?.link_m3u8 || !videoRef.current) {
+      clearStallMonitorTimer()
       destroyHls()
       return
     }
 
     const videoElement = videoRef.current
     let isCancelled = false
+    let hasPlaybackFailed = false
+
+    const syncPlaybackProgress = () => {
+      lastPlaybackProgressAtRef.current = Date.now()
+      lastPlaybackTimeRef.current = videoElement.currentTime
+    }
+
+    const triggerPlaybackFailure = (reason: string) => {
+      if (isCancelled || hasPlaybackFailed) return
+      hasPlaybackFailed = true
+      clearStallMonitorTimer()
+      handlePlaybackFailure(reason)
+    }
 
     const handleReady = () => {
       clearFallbackTimer()
@@ -270,23 +351,74 @@ const Film = () => {
       setPlayerMessage(PLAYER_READY_MESSAGE)
     }
 
-    const handleError = () => {
-      if (!isCancelled) {
-        handlePlaybackFailure('Lựa chọn hiện tại phát sinh lỗi')
-      }
-    }
+    const handleError = () => triggerPlaybackFailure('Lựa chọn hiện tại phát sinh lỗi')
 
     const startFallbackTimer = () => {
       clearFallbackTimer()
       fallbackTimerRef.current = window.setTimeout(() => {
-        handlePlaybackFailure('Lựa chọn hiện tại phản hồi chậm hoặc lỗi')
-      }, 12000)
+        triggerPlaybackFailure('Lựa chọn hiện tại phản hồi chậm hoặc lỗi')
+      }, PLAYBACK_TIMEOUT_MS)
+    }
+
+    const startStallMonitor = () => {
+      clearStallMonitorTimer()
+      syncPlaybackProgress()
+      stallMonitorTimerRef.current = window.setInterval(() => {
+        if (isCancelled || hasPlaybackFailed) return
+        if (videoElement.paused || videoElement.ended || videoElement.seeking) return
+
+        const currentTime = videoElement.currentTime
+        if (currentTime > lastPlaybackTimeRef.current + 0.01) {
+          syncPlaybackProgress()
+          return
+        }
+
+        if (Date.now() - lastPlaybackProgressAtRef.current >= PLAYBACK_STALL_MS) {
+          triggerPlaybackFailure('Video đứng hoặc không tiếp tục phát')
+        }
+      }, PLAYBACK_STALL_CHECK_INTERVAL_MS)
+    }
+
+    const handlePlaying = () => {
+      handleReady()
+      syncPlaybackProgress()
+      startStallMonitor()
+      markServerSuccessful(selectedServer?.server_name)
+    }
+
+    const handleTimeUpdate = () => {
+      syncPlaybackProgress()
+      if (!videoElement.paused) {
+        markServerSuccessful(selectedServer?.server_name)
+      }
+    }
+
+    const handleSeeking = () => {
+      lastPlaybackProgressAtRef.current = Date.now()
+      lastPlaybackTimeRef.current = videoElement.currentTime
+    }
+
+    const handleSeeked = () => {
+      syncPlaybackProgress()
+      if (!videoElement.paused) {
+        startStallMonitor()
+      }
+    }
+
+    const handleWaiting = () => {
+      lastPlaybackProgressAtRef.current = Date.now()
     }
 
     setIsPlayerLoading(true)
     startFallbackTimer()
     videoElement.addEventListener('loadedmetadata', handleReady)
     videoElement.addEventListener('canplay', handleReady)
+    videoElement.addEventListener('playing', handlePlaying)
+    videoElement.addEventListener('timeupdate', handleTimeUpdate)
+    videoElement.addEventListener('seeking', handleSeeking)
+    videoElement.addEventListener('seeked', handleSeeked)
+    videoElement.addEventListener('waiting', handleWaiting)
+    videoElement.addEventListener('stalled', handleWaiting)
     videoElement.addEventListener('error', handleError)
 
     const initializeVideo = async () => {
@@ -324,10 +456,10 @@ const Film = () => {
           return
         }
 
-        handlePlaybackFailure('Trình duyệt không hỗ trợ phát m3u8')
+        triggerPlaybackFailure('Trình duyệt không hỗ trợ phát m3u8')
       } catch (_error) {
         if (!isCancelled) {
-          handlePlaybackFailure('Không thể khởi tạo trình phát m3u8')
+          triggerPlaybackFailure('Không thể khởi tạo trình phát m3u8')
         }
       }
     }
@@ -338,11 +470,28 @@ const Film = () => {
       isCancelled = true
       videoElement.removeEventListener('loadedmetadata', handleReady)
       videoElement.removeEventListener('canplay', handleReady)
+      videoElement.removeEventListener('playing', handlePlaying)
+      videoElement.removeEventListener('timeupdate', handleTimeUpdate)
+      videoElement.removeEventListener('seeking', handleSeeking)
+      videoElement.removeEventListener('seeked', handleSeeked)
+      videoElement.removeEventListener('waiting', handleWaiting)
+      videoElement.removeEventListener('stalled', handleWaiting)
       videoElement.removeEventListener('error', handleError)
+      clearStallMonitorTimer()
       destroyHls()
       clearFallbackTimer()
     }
-  }, [clearFallbackTimer, destroyHls, handlePlaybackFailure, playerReloadToken, selectedEpisode, shouldUseVideo])
+  }, [
+    clearFallbackTimer,
+    clearStallMonitorTimer,
+    destroyHls,
+    handlePlaybackFailure,
+    markServerSuccessful,
+    playerReloadToken,
+    selectedEpisode,
+    selectedServer?.server_name,
+    shouldUseVideo
+  ])
 
   if (!dataFilm) return null
 
@@ -387,6 +536,7 @@ const Film = () => {
                 clearFallbackTimer()
                 setIsPlayerLoading(false)
                 setPlayerMessage(PLAYER_READY_MESSAGE)
+                markServerSuccessful(selectedServer?.server_name)
               }}
               onError={() => handlePlaybackFailure('Lựa chọn hiện tại phát sinh lỗi')}
               allowFullScreen

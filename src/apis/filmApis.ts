@@ -90,12 +90,6 @@ const clients = providers.reduce<Record<movieSource, AxiosInstance>>(
 
 const providerOrder: movieSource[] = ['ophim', 'kkphim', 'vsmov', 'nguonc']
 const optionProviderOrder: movieSource[] = ['ophim', 'kkphim', 'vsmov']
-const manualSourceLabels: Record<movieSource, string> = {
-  ophim: 'vietsub 1',
-  kkphim: 'vietsub 2',
-  vsmov: 'thuyết minh 1',
-  nguonc: 'thuyết minh 2'
-}
 
 const wrapData = <T>(payload: T, message = 'Tải dữ liệu thành công'): { data: data<T> } => ({
   data: {
@@ -133,6 +127,63 @@ const slugify = (value: string) =>
     .replace(/^-+|-+$/g, '')
 
 const cleanServerName = (value: string) => value.replace(/\s+/g, ' ').trim()
+
+const toTitleCase = (value: string) =>
+  value.replace(/\w\S*/g, (segment) => segment.charAt(0).toUpperCase() + segment.slice(1).toLowerCase())
+
+const getProviderIndex = (source: movieSource) => {
+  const index = providerOrder.indexOf(source)
+  return index >= 0 ? index + 1 : providers.length + 1
+}
+
+const normalizeStreamType = (value: string) => {
+  const cleanedValue = cleanServerName(value)
+  const normalizedValue = normalizeText(cleanedValue)
+
+  if (normalizedValue.includes('thuyet minh')) {
+    return {
+      key: 'thuyet-minh',
+      label: 'Thuyết minh',
+      priority: 2
+    }
+  }
+
+  if (normalizedValue.includes('long tieng')) {
+    return {
+      key: 'long-tieng',
+      label: 'Lồng tiếng',
+      priority: 3
+    }
+  }
+
+  if (
+    normalizedValue.includes('vietsub') ||
+    normalizedValue.includes('phu de') ||
+    normalizedValue.includes('subtitle') ||
+    normalizedValue.includes('sub')
+  ) {
+    return {
+      key: 'vietsub',
+      label: 'Vietsub',
+      priority: 1
+    }
+  }
+
+  if (normalizedValue.includes('raw')) {
+    return {
+      key: 'raw',
+      label: 'Raw',
+      priority: 4
+    }
+  }
+
+  const fallbackLabel = toTitleCase(cleanedValue || 'Nguồn')
+  return {
+    key: slugify(cleanedValue || 'nguon'),
+    label: fallbackLabel,
+    priority: 99
+  }
+}
 
 const joinUrl = (base: string, path: string) => {
   if (!path) return ''
@@ -487,12 +538,16 @@ const normalizeFilmResponse = ({
       const serverData = rawServerItems.map(normalizeEpisodeData).filter((entry) => entry.link_embed || entry.link_m3u8)
       if (!serverData.length) return null
       const originalServerName = cleanServerName(toStringValue(server.server_name || `${provider.label} ${index + 1}`))
+      const streamType = normalizeStreamType(originalServerName)
       return {
         server_name: originalServerName,
         original_server_name: originalServerName,
         source: provider.key,
         source_label: provider.label,
         priority: provider.priority,
+        provider_index: getProviderIndex(provider.key),
+        stream_type: streamType.label,
+        stream_type_key: streamType.key,
         server_data: serverData
       }
     })
@@ -702,24 +757,63 @@ const mergeFilmData = (films: film[]) => {
   const mergedEpisodes = films
     .flatMap((entry) => {
       const provider = providerMap[entry.item.source]
-      const mergedServerData = mergeEpisodeEntries(entry.item.episodes.flatMap((server) => server.server_data))
+      const providerIndex = getProviderIndex(entry.item.source)
+      const groupedServers = entry.item.episodes.reduce<
+        Map<
+          string,
+          {
+            typeLabel: string
+            typePriority: number
+            originalNames: string[]
+            episodes: episodeData[]
+          }
+        >
+      >((result, server) => {
+        const streamType = normalizeStreamType(server.original_server_name || server.server_name)
+        const currentGroup = result.get(streamType.key)
 
-      if (!mergedServerData.length) return []
-
-      return [
-        {
-          server_name: manualSourceLabels[entry.item.source],
-          original_server_name:
-            uniqueStrings(entry.item.episodes.map((server) => server.original_server_name)).join(' / ') ||
-            provider.label,
-          source: entry.item.source,
-          source_label: entry.item.source_label,
-          priority: provider.priority,
-          server_data: mergedServerData
+        if (!currentGroup) {
+          result.set(streamType.key, {
+            typeLabel: streamType.label,
+            typePriority: streamType.priority,
+            originalNames: [server.original_server_name || server.server_name],
+            episodes: [...server.server_data]
+          })
+          return result
         }
-      ]
+
+        currentGroup.originalNames.push(server.original_server_name || server.server_name)
+        currentGroup.episodes.push(...server.server_data)
+        return result
+      }, new Map())
+
+      return Array.from(groupedServers.entries())
+        .map(([streamTypeKey, group]) => {
+          const mergedServerData = mergeEpisodeEntries(group.episodes)
+
+          if (!mergedServerData.length) return null
+
+          return {
+            server_name: `${group.typeLabel} ${providerIndex}`,
+            original_server_name: uniqueStrings(group.originalNames).join(' / ') || provider.label,
+            source: entry.item.source,
+            source_label: entry.item.source_label,
+            priority: provider.priority,
+            provider_index: providerIndex,
+            stream_type: group.typeLabel,
+            stream_type_key: streamTypeKey,
+            server_data: mergedServerData
+          }
+        })
+        .filter(Boolean) as episodeServer[]
     })
-    .sort((left, right) => left.priority - right.priority)
+    .sort((left, right) => {
+      if (left.priority !== right.priority) return left.priority - right.priority
+      const leftTypePriority = normalizeStreamType(left.original_server_name || left.server_name).priority
+      const rightTypePriority = normalizeStreamType(right.original_server_name || right.server_name).priority
+      if (leftTypePriority !== rightTypePriority) return leftTypePriority - rightTypePriority
+      return left.server_name.localeCompare(right.server_name)
+    })
   const mergedCategories = Array.from(
     new Map(films.flatMap((entry) => entry.item.category).map((item) => [item.slug, item])).values()
   )
