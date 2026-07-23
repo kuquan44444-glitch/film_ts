@@ -3,6 +3,7 @@ import { useQuery } from 'react-query'
 import { Link, createSearchParams, useParams } from 'react-router-dom'
 import filmApis from 'src/apis/filmApis'
 import { useQueryConfig } from 'src/hooks'
+import getImageUrl from 'src/utils/getImageUrl'
 import PATH from 'src/utils/path'
 import { Fragment, useState } from 'react'
 import { Helmet } from 'react-helmet-async'
@@ -20,6 +21,8 @@ const Detail = () => {
   })
   const dataFilm = data?.data.data
   if (!dataFilm) return null
+  const posterUrl = getImageUrl(dataFilm.item.poster_url)
+  const thumbUrl = getImageUrl(dataFilm.item.thumb_url)
 
   return (
     <>
@@ -30,7 +33,7 @@ const Detail = () => {
       <div
         className='h-[600px] -mt-[56px] bg-cover bg-no-repeat bg-[50%_0] relative before:content-[""] before:absolute before:w-full before:top-0 before:bottom-0 before:bg-[#020d18bf]'
         style={{
-          backgroundImage: `url('https://img.ophim1.com/uploads/movies/${dataFilm.item.poster_url}')`
+          backgroundImage: `url('${posterUrl}')`
         }}
       />
       <div className='container px-4 -mt-[360px] pt-3 relative z-10'>
@@ -39,8 +42,8 @@ const Detail = () => {
             <img
               title={dataFilm.item.name}
               sizes='(max-width: 282px)'
-              src={`https://img.ophim1.com/uploads/movies/${dataFilm.item.thumb_url}`}
-              srcSet={`https://img.ophim1.com/uploads/movies/${dataFilm.item.thumb_url} 282px`}
+              src={thumbUrl}
+              srcSet={`${thumbUrl} 282px`}
               width={282}
               alt={dataFilm.item.name}
               className='w-[282px] h-[432px] object-cover'

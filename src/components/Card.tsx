@@ -1,18 +1,21 @@
 import { Link } from 'react-router-dom'
 import { items } from 'src/types'
+import getImageUrl from 'src/utils/getImageUrl'
 import PATH from 'src/utils/path'
 
 const Card = ({ data }: { data?: items }) => {
+  const imageUrl = data ? getImageUrl(data.thumb_url) : ''
+
   return (
     <>
       {data ? (
         <Link to={`${PATH.film}/${data.slug}`} className='relative' title={data.name}>
           <img
             sizes='(max-width: 256px)'
-            srcSet={`https://img.ophim1.com/uploads/movies/${data.thumb_url} 256w`}
+            srcSet={`${imageUrl} 256w`}
             title={data.name}
             width={256}
-            src={`https://img.ophim1.com/uploads/movies/${data.thumb_url}`}
+            src={imageUrl}
             alt={data.name}
             className='h-[290px] sm:h-[384px] w-full object-cover mb-1'
           />
