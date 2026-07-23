@@ -90,6 +90,12 @@ const clients = providers.reduce<Record<movieSource, AxiosInstance>>(
 
 const providerOrder: movieSource[] = ['ophim', 'kkphim', 'vsmov', 'nguonc']
 const optionProviderOrder: movieSource[] = ['ophim', 'kkphim', 'vsmov']
+const manualSourceLabels: Record<movieSource, string> = {
+  ophim: 'vietsub 1',
+  kkphim: 'vietsub 2',
+  vsmov: 'thuyết minh 1',
+  nguonc: 'thuyết minh 2'
+}
 
 const wrapData = <T>(payload: T, message = 'Tải dữ liệu thành công'): { data: data<T> } => ({
   data: {
@@ -415,6 +421,39 @@ const normalizeEpisodeData = (input: Record<string, unknown>): episodeData => ({
   link_m3u8: toStringValue(input.link_m3u8 ?? input.m3u8)
 })
 
+const createEpisodeMergeKey = (episode: episodeData) => {
+  const slugValue = slugify(episode.slug)
+  if (slugValue) return `slug:${slugValue}`
+
+  const filenameValue = slugify(episode.filename)
+  if (filenameValue) return `file:${filenameValue}`
+
+  return `name:${slugify(episode.name || 'full')}`
+}
+
+const mergeEpisodeEntries = (episodes: episodeData[]) =>
+  Array.from(
+    episodes.reduce<Map<string, episodeData>>((result, episode) => {
+      const mergeKey = createEpisodeMergeKey(episode)
+      const currentEntry = result.get(mergeKey)
+
+      if (!currentEntry) {
+        result.set(mergeKey, episode)
+        return result
+      }
+
+      result.set(mergeKey, {
+        ...currentEntry,
+        name: currentEntry.name || episode.name,
+        slug: currentEntry.slug || episode.slug,
+        filename: currentEntry.filename || episode.filename,
+        link_embed: currentEntry.link_embed || episode.link_embed,
+        link_m3u8: currentEntry.link_m3u8 || episode.link_m3u8
+      })
+      return result
+    }, new Map())
+  ).map(([, value]) => value)
+
 const normalizeFilmResponse = ({
   payload,
   provider
@@ -574,11 +613,21 @@ const searchFilmsByProvider = async (provider: ProviderConfig, keyword: string) 
 
 const scoreFilmCandidate = (
   baseItem: film['item'],
-  candidate: Pick<items, 'name' | 'origin_name' | 'year' | 'type'>
+  candidate: Pick<items, 'name' | 'origin_name' | 'year' | 'type' | 'slug'>
 ) => {
   const baseNames = uniqueStrings([baseItem.origin_name, baseItem.name])
   const candidateNames = uniqueStrings([candidate.origin_name, candidate.name])
+  const baseSlug = slugify(baseItem.slug)
+  const candidateSlug = slugify(candidate.slug)
   let score = 0
+
+  if (baseSlug && candidateSlug) {
+    if (baseSlug === candidateSlug) {
+      score = Math.max(score, 150)
+    } else if (baseSlug.includes(candidateSlug) || candidateSlug.includes(baseSlug)) {
+      score = Math.max(score, 85)
+    }
+  }
 
   for (const baseName of baseNames) {
     const normalizedBaseName = normalizeText(baseName)
@@ -615,7 +664,7 @@ const scoreFilmCandidate = (
 }
 
 const findAlternativeFilmForProvider = async (provider: ProviderConfig, baseItem: film['item']) => {
-  const keywords = uniqueStrings([baseItem.origin_name, baseItem.name])
+  const keywords = uniqueStrings([baseItem.origin_name, baseItem.name, baseItem.slug.replace(/-/g, ' ')])
   let bestMatch: items | null = null
   let bestScore = 0
 
@@ -634,11 +683,11 @@ const findAlternativeFilmForProvider = async (provider: ProviderConfig, baseItem
     }
   }
 
-  if (!bestMatch || bestScore < 90) return null
+  if (!bestMatch || bestScore < 80) return null
 
   try {
     const matchedFilm = await getFilmByProvider(provider, bestMatch.slug)
-    return scoreFilmCandidate(baseItem, matchedFilm.item) >= 90 ? matchedFilm : null
+    return scoreFilmCandidate(baseItem, matchedFilm.item) >= 80 ? matchedFilm : null
   } catch {
     return null
   }
@@ -651,12 +700,26 @@ const mergeFilmData = (films: film[]) => {
     poster: uniqueStrings(films.flatMap((entry) => entry.item.image_urls.poster))
   }
   const mergedEpisodes = films
-    .flatMap((entry) => entry.item.episodes)
+    .flatMap((entry) => {
+      const provider = providerMap[entry.item.source]
+      const mergedServerData = mergeEpisodeEntries(entry.item.episodes.flatMap((server) => server.server_data))
+
+      if (!mergedServerData.length) return []
+
+      return [
+        {
+          server_name: manualSourceLabels[entry.item.source],
+          original_server_name:
+            uniqueStrings(entry.item.episodes.map((server) => server.original_server_name)).join(' / ') ||
+            provider.label,
+          source: entry.item.source,
+          source_label: entry.item.source_label,
+          priority: provider.priority,
+          server_data: mergedServerData
+        }
+      ]
+    })
     .sort((left, right) => left.priority - right.priority)
-    .map((entry, index) => ({
-      ...entry,
-      server_name: `${entry.source_label} ${index + 1}`
-    }))
   const mergedCategories = Array.from(
     new Map(films.flatMap((entry) => entry.item.category).map((item) => [item.slug, item])).values()
   )
@@ -667,11 +730,18 @@ const mergeFilmData = (films: film[]) => {
     Object.assign(result, entry.item.source_slugs)
     return result
   }, {})
-  const availableSources = films.map((entry) => ({
-    source: entry.item.source,
-    label: entry.item.source_label,
-    slug: entry.item.slug
-  }))
+  const availableSources = Array.from(
+    new Map(
+      films.map((entry) => [
+        entry.item.source,
+        {
+          source: entry.item.source,
+          label: entry.item.source_label,
+          slug: entry.item.slug
+        }
+      ])
+    ).values()
+  ).sort((left, right) => providerMap[left.source].priority - providerMap[right.source].priority)
 
   return {
     ...primary,
