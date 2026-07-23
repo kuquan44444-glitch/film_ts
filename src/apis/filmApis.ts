@@ -558,7 +558,7 @@ const mergeFilmData = (films: film[]) => {
     .sort((left, right) => left.priority - right.priority)
     .map((entry, index) => ({
       ...entry,
-      server_name: `Server ${index + 1}`
+      server_name: `${entry.source}-${slugify(entry.original_server_name || `server-${index + 1}`)}-${index + 1}`
     }))
   const mergedCategories = Array.from(
     new Map(films.flatMap((entry) => entry.item.category).map((item) => [item.slug, item])).values()

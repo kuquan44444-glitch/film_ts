@@ -5,18 +5,125 @@ import { useQuery } from 'react-query'
 import { Link, createSearchParams, useParams } from 'react-router-dom'
 import filmApis from 'src/apis/filmApis'
 import { useQueryConfig } from 'src/hooks'
-import { episodeData, episodeServer } from 'src/types'
+import { episodeData, episodeServer, movieSource } from 'src/types'
 import PATH from 'src/utils/path'
 import FacebookShareButton from 'react-share/es/FacebookShareButton'
+
+type PlaybackType = 'hls' | 'embed'
+
+type PlaybackAttempt = {
+  id: string
+  url: string
+  type: PlaybackType
+  server: episodeServer
+  episode: episodeData
+}
+
+type HlsErrorPayload = {
+  fatal?: boolean
+}
+
+type HlsInstance = {
+  loadSource: (url: string) => void
+  attachMedia: (media: HTMLVideoElement) => void
+  on: (eventName: string, callback: (_eventName: string, data?: HlsErrorPayload) => void) => void
+  destroy: () => void
+}
+
+type HlsStatic = {
+  new (config?: Record<string, unknown>): HlsInstance
+  isSupported: () => boolean
+  Events: {
+    MANIFEST_PARSED: string
+    ERROR: string
+  }
+}
+
+declare global {
+  interface Window {
+    Hls?: HlsStatic
+  }
+}
+
+const HLS_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.18/dist/hls.min.js'
+const SOURCE_SHORT_LABELS: Record<movieSource, string> = {
+  ophim: 'o',
+  kkphim: 'k',
+  vsmov: 'v',
+  nguonc: 'n'
+}
+
+let hlsScriptPromise: Promise<HlsStatic | null> | null = null
+
+const loadHlsLibrary = () => {
+  if (typeof window === 'undefined') return Promise.resolve(null)
+  if (window.Hls) return Promise.resolve(window.Hls)
+  if (hlsScriptPromise) return hlsScriptPromise
+
+  hlsScriptPromise = new Promise((resolve) => {
+    const existingScript = document.querySelector<HTMLScriptElement>('script[data-hls-loader="true"]')
+
+    if (existingScript) {
+      existingScript.addEventListener('load', () => resolve(window.Hls ?? null), { once: true })
+      existingScript.addEventListener('error', () => resolve(null), { once: true })
+      return
+    }
+
+    const script = document.createElement('script')
+    script.src = HLS_SCRIPT_URL
+    script.async = true
+    script.dataset.hlsLoader = 'true'
+    script.onload = () => resolve(window.Hls ?? null)
+    script.onerror = () => resolve(null)
+    document.head.appendChild(script)
+  })
+
+  return hlsScriptPromise
+}
+
+const normalizeLabelText = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase()
+    .trim()
+
+const getLanguageVariant = (server: episodeServer, defaultLang: string) => {
+  const normalized = normalizeLabelText(`${server.original_server_name} ${defaultLang}`)
+
+  if (normalized.includes('thuyet minh') || normalized.includes('long tieng') || normalized.includes('dub')) {
+    return 'thuyết minh'
+  }
+
+  if (
+    normalized.includes('vietsub') ||
+    normalized.includes('phu de') ||
+    normalized.includes('subtitle') ||
+    normalized.includes('sub')
+  ) {
+    return 'vietsub'
+  }
+
+  return defaultLang ? defaultLang.toLowerCase() : 'nguồn'
+}
+
+const buildSourceChipLabel = (server: episodeServer, index: number, defaultLang: string) => {
+  const shortLabel = SOURCE_SHORT_LABELS[server.source]
+  return `${shortLabel}-${getLanguageVariant(server, defaultLang)} ${index + 1}`
+}
 
 const Film = () => {
   const queryConfig = useQueryConfig()
   const [nameServer, setNameServer] = useState<string>('')
   const [episodeSlug, setEpisodeSlug] = useState<string>('')
-  const [playerMessage, setPlayerMessage] = useState<string>('')
   const [isPlayerLoading, setIsPlayerLoading] = useState<boolean>(false)
-  const [attemptedServers, setAttemptedServers] = useState<string[]>([])
+  const [attemptedPlaybacks, setAttemptedPlaybacks] = useState<string[]>([])
+  const [activeAttempt, setActiveAttempt] = useState<PlaybackAttempt | null>(null)
   const fallbackTimerRef = useRef<number>()
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const hlsRef = useRef<HlsInstance | null>(null)
   const { slug } = useParams()
   const { data } = useQuery({
     queryKey: [slug],
@@ -34,11 +141,23 @@ const Film = () => {
     if (!selectedServer) return undefined
     return selectedServer.server_data.find((item) => item.slug === episodeSlug) ?? selectedServer.server_data[0]
   }, [episodeSlug, selectedServer])
-  const currentEpisodeUrl = selectedEpisode?.link_embed || selectedEpisode?.link_m3u8 || ''
-
   const clearFallbackTimer = useCallback(() => {
     if (fallbackTimerRef.current) {
       window.clearTimeout(fallbackTimerRef.current)
+      fallbackTimerRef.current = undefined
+    }
+  }, [])
+
+  const destroyHls = useCallback(() => {
+    if (hlsRef.current) {
+      hlsRef.current.destroy()
+      hlsRef.current = null
+    }
+
+    if (videoRef.current) {
+      videoRef.current.pause()
+      videoRef.current.removeAttribute('src')
+      videoRef.current.load()
     }
   }, [])
 
@@ -55,57 +174,126 @@ const Film = () => {
     )
   }, [])
 
+  const buildPlaybackAttempts = useCallback(
+    (options?: { preferredEpisode?: episodeData; preferredServerName?: string }) => {
+      const prioritizedServers = options?.preferredServerName
+        ? [
+            ...servers.filter((server) => server.server_name === options.preferredServerName),
+            ...servers.filter((server) => server.server_name !== options.preferredServerName)
+          ]
+        : servers
+
+      return prioritizedServers.flatMap((server) => {
+        const nextEpisode = getEpisodeForServer(server, options?.preferredEpisode)
+        if (!nextEpisode) return []
+
+        const attempts: PlaybackAttempt[] = []
+
+        if (nextEpisode.link_m3u8) {
+          attempts.push({
+            id: `${server.server_name}:${nextEpisode.slug}:hls`,
+            url: nextEpisode.link_m3u8,
+            type: 'hls',
+            server,
+            episode: nextEpisode
+          })
+        }
+
+        if (nextEpisode.link_embed) {
+          attempts.push({
+            id: `${server.server_name}:${nextEpisode.slug}:embed`,
+            url: nextEpisode.link_embed,
+            type: 'embed',
+            server,
+            episode: nextEpisode
+          })
+        }
+
+        return attempts
+      })
+    },
+    [getEpisodeForServer, servers]
+  )
+
+  const activateAttempt = useCallback(
+    (attempt?: PlaybackAttempt | null, options?: { resetAttempts?: boolean }) => {
+      if (!attempt) return
+
+      clearFallbackTimer()
+      setNameServer(attempt.server.server_name)
+      setEpisodeSlug(attempt.episode.slug)
+      setActiveAttempt(attempt)
+      setIsPlayerLoading(true)
+      setAttemptedPlaybacks((previous) => {
+        if (options?.resetAttempts) return [attempt.id]
+        return Array.from(new Set([...previous, attempt.id]))
+      })
+    },
+    [clearFallbackTimer]
+  )
+
   const activateServer = useCallback(
     (
       server: episodeServer,
       options?: {
         preferredEpisode?: episodeData
         resetAttempts?: boolean
-        message?: string
       }
     ) => {
-      const nextEpisode = getEpisodeForServer(server, options?.preferredEpisode)
+      const [nextAttempt] = buildPlaybackAttempts({
+        preferredEpisode: options?.preferredEpisode,
+        preferredServerName: server.server_name
+      })
+
+      activateAttempt(nextAttempt, { resetAttempts: options?.resetAttempts })
+    },
+    [activateAttempt, buildPlaybackAttempts]
+  )
+
+  const handleFallback = useCallback(() => {
+    if (!activeAttempt) return
+
+    const nextAttempt = buildPlaybackAttempts({
+      preferredEpisode: activeAttempt.episode,
+      preferredServerName: activeAttempt.server.server_name
+    }).find((attempt) => !attemptedPlaybacks.includes(attempt.id))
+
+    if (!nextAttempt) {
       clearFallbackTimer()
-      setNameServer(server.server_name)
-      setEpisodeSlug(nextEpisode?.slug || '')
-      setPlayerMessage(options?.message || `Đang phát bằng ${server.source_label} - ${server.original_server_name}`)
-      setAttemptedServers((previous) => {
-        if (options?.resetAttempts) return [server.server_name]
-        return Array.from(new Set([...previous, server.server_name]))
-      })
-    },
-    [clearFallbackTimer, getEpisodeForServer]
-  )
+      destroyHls()
+      setIsPlayerLoading(false)
+      return
+    }
 
-  const handleFallback = useCallback(
-    (reason: string) => {
-      if (!servers.length) return
+    activateAttempt(nextAttempt)
+  }, [activeAttempt, activateAttempt, attemptedPlaybacks, buildPlaybackAttempts, clearFallbackTimer, destroyHls])
 
-      const nextServer = servers.find((server) => !attemptedServers.includes(server.server_name))
+  const handleVideoReady = useCallback(() => {
+    clearFallbackTimer()
+    setIsPlayerLoading(false)
+  }, [clearFallbackTimer])
 
-      if (!nextServer) {
-        clearFallbackTimer()
-        setIsPlayerLoading(false)
-        setPlayerMessage(`${reason}. Không còn nguồn dự phòng khả dụng, hãy thử đổi nguồn thủ công.`)
-        return
-      }
-
-      activateServer(nextServer, {
-        preferredEpisode: selectedEpisode,
-        message: `${reason}. Đang tự chuyển sang ${nextServer.source_label} - ${nextServer.original_server_name}`
-      })
-    },
-    [activateServer, attemptedServers, clearFallbackTimer, selectedEpisode, servers]
-  )
+  const handleVideoWaiting = useCallback(() => {
+    setIsPlayerLoading(true)
+  }, [])
 
   useEffect(() => {
-    if (servers.length && !nameServer) {
+    setNameServer('')
+    setEpisodeSlug('')
+    setAttemptedPlaybacks([])
+    setActiveAttempt(null)
+    setIsPlayerLoading(false)
+    clearFallbackTimer()
+    destroyHls()
+  }, [clearFallbackTimer, destroyHls, slug])
+
+  useEffect(() => {
+    if (servers.length && !activeAttempt) {
       activateServer(servers[0], {
-        resetAttempts: true,
-        message: `Đang ưu tiên nguồn ${servers[0].source_label} - ${servers[0].original_server_name}`
+        resetAttempts: true
       })
     }
-  }, [activateServer, nameServer, servers])
+  }, [activateServer, activeAttempt, servers])
 
   useEffect(() => {
     if (!selectedServer) return
@@ -119,23 +307,94 @@ const Film = () => {
   }, [episodeSlug, selectedServer])
 
   useEffect(() => {
-    if (!currentEpisodeUrl) {
-      if (selectedServer) {
-        handleFallback('Nguồn hiện tại không có link phát hợp lệ')
-      }
-      return
-    }
+    if (!activeAttempt) return
 
     setIsPlayerLoading(true)
     clearFallbackTimer()
     fallbackTimerRef.current = window.setTimeout(() => {
-      handleFallback('Nguồn hiện tại phản hồi chậm hoặc lỗi')
-    }, 12000)
+      handleFallback()
+    }, activeAttempt.type === 'hls' ? 15000 : 12000)
 
     return () => {
       clearFallbackTimer()
     }
-  }, [clearFallbackTimer, currentEpisodeUrl, handleFallback, selectedServer])
+  }, [activeAttempt, clearFallbackTimer, handleFallback])
+
+  useEffect(() => {
+    if (!activeAttempt || activeAttempt.type !== 'hls') {
+      destroyHls()
+      return
+    }
+
+    const video = videoRef.current
+
+    if (!video) return
+
+    let isCancelled = false
+    const onVideoError = () => {
+      if (!isCancelled) handleFallback()
+    }
+
+    video.addEventListener('loadeddata', handleVideoReady)
+    video.addEventListener('canplay', handleVideoReady)
+    video.addEventListener('playing', handleVideoReady)
+    video.addEventListener('waiting', handleVideoWaiting)
+    video.addEventListener('stalled', onVideoError)
+    video.addEventListener('error', onVideoError)
+
+    const setupHlsPlayback = async () => {
+      if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = activeAttempt.url
+        void video.play().catch(() => undefined)
+        return
+      }
+
+      const Hls = await loadHlsLibrary()
+      if (isCancelled) return
+
+      if (!Hls || !Hls.isSupported()) {
+        handleFallback()
+        return
+      }
+
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true
+      })
+
+      hlsRef.current = hls
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (isCancelled) return
+        void video.play().catch(() => undefined)
+      })
+      hls.on(Hls.Events.ERROR, (_eventName, data) => {
+        if (isCancelled || !data?.fatal) return
+        handleFallback()
+      })
+      hls.loadSource(activeAttempt.url)
+      hls.attachMedia(video)
+    }
+
+    void setupHlsPlayback()
+
+    return () => {
+      isCancelled = true
+      video.removeEventListener('loadeddata', handleVideoReady)
+      video.removeEventListener('canplay', handleVideoReady)
+      video.removeEventListener('playing', handleVideoReady)
+      video.removeEventListener('waiting', handleVideoWaiting)
+      video.removeEventListener('stalled', onVideoError)
+      video.removeEventListener('error', onVideoError)
+      destroyHls()
+    }
+  }, [activeAttempt, destroyHls, handleFallback, handleVideoReady, handleVideoWaiting])
+
+  useEffect(() => {
+    return () => {
+      clearFallbackTimer()
+      destroyHls()
+    }
+  }, [clearFallbackTimer, destroyHls])
 
   if (!dataFilm) return null
 
@@ -148,75 +407,61 @@ const Film = () => {
       <div>
         <div className='relative w-full h-[36vh] sm:h-[56vh] md:h-[66vh] lg:h-[76vh] xl:h-[86vh] bg-black'>
           {isPlayerLoading && (
-            <div className='absolute inset-0 z-10 flex items-center justify-center bg-black/40 text-white'>
-              Đang tải nguồn phát...
+            <div className='absolute inset-0 z-10 flex items-center justify-center bg-black/45'>
+              <span className='h-11 w-11 animate-spin rounded-full border-[3px] border-white/20 border-t-white' />
             </div>
           )}
-          <iframe
-            className='w-full h-full'
-            title={dataFilm.item.name}
-            src={currentEpisodeUrl}
-            frameBorder={0}
-            loading='eager'
-            onLoad={() => {
-              clearFallbackTimer()
-              setIsPlayerLoading(false)
-              if (selectedServer) {
-                setPlayerMessage(
-                  `Đang phát bằng ${selectedServer.source_label} - ${selectedServer.original_server_name}`
-                )
-              }
-            }}
-            onError={() => handleFallback('Nguồn hiện tại phát sinh lỗi')}
-            allowFullScreen
-          ></iframe>
+          {activeAttempt?.type === 'hls' ? (
+            <video
+              key={activeAttempt.id}
+              ref={videoRef}
+              className='w-full h-full bg-black'
+              controls
+              autoPlay
+              playsInline
+              preload='auto'
+            />
+          ) : (
+            <iframe
+              key={activeAttempt?.id || 'empty-player'}
+              className='w-full h-full'
+              title={dataFilm.item.name}
+              src={activeAttempt?.url || ''}
+              frameBorder={0}
+              loading='eager'
+              allow='autoplay; encrypted-media; picture-in-picture; fullscreen'
+              onLoad={() => {
+                clearFallbackTimer()
+                setIsPlayerLoading(false)
+              }}
+              onError={() => handleFallback()}
+              allowFullScreen
+            ></iframe>
+          )}
         </div>
-        <div className='container mt-4 px-4'>
-          <div className='rounded-md border border-white/10 bg-[#0e274073] p-3 text-sm text-white/80'>
-            {playerMessage || 'Đang chuẩn bị nguồn phát tự động.'}
-          </div>
-        </div>
-        <div className='mt-6 flex items-center justify-center gap-2'>
-          {servers.map((item) => (
+        <div className='container mt-4 flex flex-wrap items-center gap-2 px-4'>
+          {servers.map((item, index) => (
             <button
-              title={`${item.server_name} - ${item.source_label}`}
+              title={`${item.source_label} - ${item.original_server_name}`}
               onClick={() =>
                 activateServer(item, {
                   preferredEpisode: selectedEpisode,
-                  resetAttempts: true,
-                  message: `Đã chuyển sang ${item.source_label} - ${item.original_server_name}`
+                  resetAttempts: true
                 })
               }
               key={item.server_name}
-              className={classNames('rounded px-3 py-2 flex flex-col items-center justify-center gap-1 font-medium', {
-                'bg-white/40': item.server_name === nameServer,
-                'bg-white': item.server_name !== nameServer
-              })}
+              className={classNames(
+                'whitespace-nowrap rounded-md border px-3 py-2 text-[11px] font-semibold transition',
+                {
+                  'border-lime-400 bg-lime-400/15 text-lime-300': item.server_name === nameServer,
+                  'border-white/15 bg-white/5 text-white/75 hover:border-white/30 hover:bg-white/10':
+                    item.server_name !== nameServer
+                }
+              )}
             >
-              <span className='flex items-center justify-center gap-1'>
-                {item.server_name === nameServer && (
-                  <svg
-                    xmlns='http://www.w3.org/2000/svg'
-                    fill='none'
-                    viewBox='0 0 24 24'
-                    strokeWidth={3}
-                    stroke='currentColor'
-                    className='w-4 h-4 stroke-green-500 -ml-1'
-                  >
-                    <path strokeLinecap='round' strokeLinejoin='round' d='M4.5 12.75l6 6 9-13.5' />
-                  </svg>
-                )}
-                {item.server_name}
-              </span>
-              <span className='text-xs text-black/70'>{item.source_label}</span>
+              {buildSourceChipLabel(item, index, dataFilm.item.lang)}
             </button>
           ))}
-        </div>
-        <div className='container px-4 mt-2'>
-          <p className='text-sm text-white/60'>
-            Có thể đổi nguồn thủ công khi lag hoặc lỗi. Hệ thống sẽ tự nhảy sang nguồn kế tiếp nếu nguồn hiện tại phản
-            hồi chậm.
-          </p>
         </div>
         <div className='container px-4 mt-6'>
           <div className='block md:flex items-center justify-between mb-10'>
@@ -241,9 +486,6 @@ const Film = () => {
                 </Link>
                 )
               </h2>
-              <p className='mb-6 text-sm text-white/60'>
-                Nguồn hiện có: {dataFilm.item.available_sources.map((item) => item.label).join(' • ')}
-              </p>
               <FacebookShareButton url={`https://vphim.vercel.app/${PATH.film}/${slug}`}>
                 <div
                   title='Chia sẻ phim miễn phí với Facebook'
@@ -271,9 +513,12 @@ const Film = () => {
               <button
                 title={`Tập ${item.name}`}
                 onClick={() => {
-                  setEpisodeSlug(item.slug)
-                  setAttemptedServers([selectedServer.server_name])
-                  setPlayerMessage(`Đã đổi tập ${item.name} trên ${selectedServer.source_label}`)
+                  const [nextAttempt] = buildPlaybackAttempts({
+                    preferredEpisode: item,
+                    preferredServerName: selectedServer.server_name
+                  })
+
+                  activateAttempt(nextAttempt, { resetAttempts: true })
                 }}
                 disabled={item.slug === selectedEpisode?.slug}
                 key={index}
