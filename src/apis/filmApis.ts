@@ -547,6 +547,103 @@ const normalizeFilmResponse = ({
   }
 }
 
+const getFilmByProvider = async (provider: ProviderConfig, slug: string) => {
+  const response = await clients[provider.key].get<Record<string, unknown>>(getProviderFilmEndpoint(provider.key, slug))
+  return normalizeFilmResponse({
+    payload: response.data,
+    provider
+  })
+}
+
+const searchFilmsByProvider = async (provider: ProviderConfig, keyword: string) => {
+  const searchParams: SearchParams = {
+    keyword,
+    page: '1'
+  }
+  const response = await clients[provider.key].get<Record<string, unknown>>(getProviderSearchEndpoint(provider.key), {
+    params: buildRequestParams(provider.key, searchParams)
+  })
+
+  return normalizeListResponse({
+    payload: response.data,
+    provider,
+    type: PATH.search,
+    params: searchParams
+  }).items
+}
+
+const scoreFilmCandidate = (
+  baseItem: film['item'],
+  candidate: Pick<items, 'name' | 'origin_name' | 'year' | 'type'>
+) => {
+  const baseNames = uniqueStrings([baseItem.origin_name, baseItem.name])
+  const candidateNames = uniqueStrings([candidate.origin_name, candidate.name])
+  let score = 0
+
+  for (const baseName of baseNames) {
+    const normalizedBaseName = normalizeText(baseName)
+    if (!normalizedBaseName) continue
+
+    for (const candidateName of candidateNames) {
+      const normalizedCandidateName = normalizeText(candidateName)
+      if (!normalizedCandidateName) continue
+
+      if (normalizedBaseName === normalizedCandidateName) {
+        score = Math.max(score, 120)
+        continue
+      }
+
+      const comparableLength = Math.min(normalizedBaseName.length, normalizedCandidateName.length)
+      if (
+        comparableLength >= 6 &&
+        (normalizedBaseName.includes(normalizedCandidateName) || normalizedCandidateName.includes(normalizedBaseName))
+      ) {
+        score = Math.max(score, 70)
+      }
+    }
+  }
+
+  if (baseItem.year && candidate.year && baseItem.year === candidate.year) {
+    score += 20
+  }
+
+  if (baseItem.type && candidate.type && baseItem.type === candidate.type) {
+    score += 10
+  }
+
+  return score
+}
+
+const findAlternativeFilmForProvider = async (provider: ProviderConfig, baseItem: film['item']) => {
+  const keywords = uniqueStrings([baseItem.origin_name, baseItem.name])
+  let bestMatch: items | null = null
+  let bestScore = 0
+
+  for (const keyword of keywords) {
+    try {
+      const candidates = await searchFilmsByProvider(provider, keyword)
+      for (const candidate of candidates) {
+        const score = scoreFilmCandidate(baseItem, candidate)
+        if (score > bestScore) {
+          bestMatch = candidate
+          bestScore = score
+        }
+      }
+    } catch {
+      continue
+    }
+  }
+
+  if (!bestMatch || bestScore < 90) return null
+
+  try {
+    const matchedFilm = await getFilmByProvider(provider, bestMatch.slug)
+    return scoreFilmCandidate(baseItem, matchedFilm.item) >= 90 ? matchedFilm : null
+  } catch {
+    return null
+  }
+}
+
 const mergeFilmData = (films: film[]) => {
   const [primary, ...restFilms] = films
   const mergedImageUrls: imageSet = {
@@ -558,7 +655,7 @@ const mergeFilmData = (films: film[]) => {
     .sort((left, right) => left.priority - right.priority)
     .map((entry, index) => ({
       ...entry,
-      server_name: `Server ${index + 1}`
+      server_name: `${entry.source_label} ${index + 1}`
     }))
   const mergedCategories = Array.from(
     new Map(films.flatMap((entry) => entry.item.category).map((item) => [item.slug, item])).values()
@@ -731,16 +828,7 @@ const filmApis = {
   },
   async getFilm(slug: string): ApiEnvelope<film> {
     const settledResults = await Promise.allSettled(
-      providerOrder.map(async (source) => {
-        const provider = providerMap[source]
-        const response = await clients[provider.key].get<Record<string, unknown>>(
-          getProviderFilmEndpoint(provider.key, slug)
-        )
-        return normalizeFilmResponse({
-          payload: response.data,
-          provider
-        })
-      })
+      providerOrder.map(async (source) => getFilmByProvider(providerMap[source], slug))
     )
 
     const successfulFilms = settledResults
@@ -755,7 +843,20 @@ const filmApis = {
       throw new Error('Không tìm thấy phim ở tất cả nguồn đã cấu hình.')
     }
 
-    return wrapData(mergeFilmData(successfulFilms), 'Đã tải chi tiết phim từ nhiều nguồn')
+    const fetchedSources = new Set(successfulFilms.map((entry) => entry.item.source))
+    const primaryFilm = successfulFilms[0]
+    const missingSources = providerOrder.filter((source) => !fetchedSources.has(source))
+    const alternativeResults = await Promise.allSettled(
+      missingSources.map(async (source) => findAlternativeFilmForProvider(providerMap[source], primaryFilm.item))
+    )
+    const alternativeFilms = alternativeResults.flatMap((result) =>
+      result.status === 'fulfilled' && result.value ? [result.value] : []
+    )
+    const mergedFilms = [...successfulFilms, ...alternativeFilms].sort(
+      (left, right) => providerMap[left.item.source].priority - providerMap[right.item.source].priority
+    )
+
+    return wrapData(mergeFilmData(mergedFilms), 'Đã tải chi tiết phim từ nhiều nguồn')
   }
 }
 export default filmApis

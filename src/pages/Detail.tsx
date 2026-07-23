@@ -79,9 +79,6 @@ const Detail = () => {
             <h2 title={dataFilm.item.name} className='text-[#b5b5b5] text-2xl break-all leading-[30px] mb-8'>
               {dataFilm.item.name} (<strong className='text-[#428bca]'>{dataFilm.item.year}</strong>)
             </h2>
-            <p className='mb-6 text-sm text-white/60'>
-              Nguồn dữ liệu: {dataFilm.item.available_sources.map((item) => item.label).join(' • ')}
-            </p>
             <span
               title={`Thời lượng phim ${dataFilm.item.time}`}
               className='inline-block cursor-help mb-8 md:mb-10 text-white text-lg'
