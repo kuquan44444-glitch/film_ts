@@ -31,6 +31,10 @@ let hlsScriptPromise: Promise<HlsConstructor | null> | null = null
 const DEFAULT_PLAYER_MESSAGE = 'Đang chuẩn bị phát phim.'
 const PLAYER_READY_MESSAGE = 'Đang phát phim.'
 const PLAYER_LOADING_MESSAGE = 'Đang tải phim...'
+const getServerIssueMessage = (server?: episodeServer) =>
+  server?.issue || 'Provider hiện không có source phát hợp lệ, nhưng vẫn được giữ để debug.'
+const isServerPlayable = (server?: episodeServer) =>
+  Boolean(server && server.playable_episodes > 0 && server.server_data.length)
 
 const loadHlsConstructor = async () => {
   if (typeof window === 'undefined') return null
@@ -88,6 +92,7 @@ const Film = () => {
   })
   const dataFilm = data?.data.data
   const servers = useMemo(() => dataFilm?.item.episodes ?? [], [dataFilm])
+  const playableServers = useMemo(() => servers.filter((server) => isServerPlayable(server)), [servers])
   const selectedServer = useMemo(
     () => servers.find((item) => item.server_name === nameServer) ?? servers[0],
     [nameServer, servers]
@@ -101,6 +106,32 @@ const Film = () => {
       ? selectedEpisode?.link_m3u8 || selectedEpisode?.link_embed || ''
       : selectedEpisode?.link_embed || selectedEpisode?.link_m3u8 || ''
   const shouldUseVideo = playbackMode === 'm3u8' && Boolean(selectedEpisode?.link_m3u8)
+
+  useEffect(() => {
+    if (!dataFilm) return
+
+    console.info('[Provider Debug] Frontend render provider', {
+      slug,
+      backendProviders: dataFilm.item.available_sources.map((provider) => ({
+        providerIndex: provider.provider_index,
+        source: provider.source,
+        label: provider.label,
+        totalEpisodes: provider.total_episodes,
+        playableEpisodes: provider.playable_episodes,
+        status: provider.status,
+        issue: provider.issue || null
+      })),
+      renderedProviders: servers.map((server) => ({
+        source: server.source,
+        label: server.source_label,
+        serverName: server.server_name,
+        totalEpisodes: server.total_episodes,
+        playableEpisodes: server.playable_episodes,
+        status: server.status,
+        issue: server.issue || null
+      }))
+    })
+  }, [dataFilm, servers, slug])
 
   const clearFallbackTimer = useCallback(() => {
     if (fallbackTimerRef.current) {
@@ -165,9 +196,9 @@ const Film = () => {
 
   const handleFallback = useCallback(
     (reason: string) => {
-      if (!servers.length) return
+      if (!playableServers.length) return
 
-      const nextServer = servers.find((server) => !attemptedServers.includes(server.server_name))
+      const nextServer = playableServers.find((server) => !attemptedServers.includes(server.server_name))
 
       if (!nextServer) {
         clearFallbackTimer()
@@ -181,7 +212,7 @@ const Film = () => {
         message: `${reason}. Đang thử lựa chọn khác.`
       })
     },
-    [activateServer, attemptedServers, clearFallbackTimer, selectedEpisode, servers]
+    [activateServer, attemptedServers, clearFallbackTimer, playableServers, selectedEpisode]
   )
 
   const handlePlaybackFailure = useCallback(
@@ -215,15 +246,25 @@ const Film = () => {
 
   useEffect(() => {
     if (servers.length && !nameServer) {
-      activateServer(servers[0], {
+      activateServer(playableServers[0] ?? servers[0], {
         resetAttempts: true,
-        message: DEFAULT_PLAYER_MESSAGE
+        message: isServerPlayable(playableServers[0] ?? servers[0])
+          ? DEFAULT_PLAYER_MESSAGE
+          : getServerIssueMessage(playableServers[0] ?? servers[0])
       })
     }
-  }, [activateServer, nameServer, servers])
+  }, [activateServer, nameServer, playableServers, servers])
 
   useEffect(() => {
     if (!selectedServer) return
+
+    if (!isServerPlayable(selectedServer)) {
+      clearFallbackTimer()
+      destroyHls()
+      setIsPlayerLoading(false)
+      setPlayerMessage(getServerIssueMessage(selectedServer))
+      return
+    }
 
     const nextEpisode =
       selectedServer.server_data.find((item) => item.slug === episodeSlug) ?? selectedServer.server_data[0]
@@ -232,12 +273,18 @@ const Film = () => {
       setEpisodeSlug(nextEpisode.slug)
       setPlaybackMode(getPreferredPlaybackMode(nextEpisode))
     }
-  }, [episodeSlug, getPreferredPlaybackMode, selectedServer])
+  }, [clearFallbackTimer, destroyHls, episodeSlug, getPreferredPlaybackMode, selectedServer])
 
   useEffect(() => {
     if (!currentEpisodeUrl) {
       if (selectedServer) {
-        handlePlaybackFailure('Lựa chọn hiện tại không có link hợp lệ')
+        if (!isServerPlayable(selectedServer)) {
+          clearFallbackTimer()
+          setIsPlayerLoading(false)
+          setPlayerMessage(getServerIssueMessage(selectedServer))
+        } else {
+          handlePlaybackFailure('Lựa chọn hiện tại không có link hợp lệ')
+        }
       }
       return
     }
@@ -402,20 +449,24 @@ const Film = () => {
           <div className='mt-6 flex items-center justify-center gap-2'>
             {servers.map((item) => {
               const isActive = item.server_name === (selectedServer?.server_name || nameServer)
+              const isDisabled = !isServerPlayable(item)
               return (
                 <button
-                  title={item.server_name}
-                  onClick={() =>
+                  title={item.issue ? `${item.server_name} - ${item.issue}` : item.server_name}
+                  onClick={() => {
+                    if (isDisabled) return
                     activateServer(item, {
                       preferredEpisode: selectedEpisode,
                       resetAttempts: true,
                       message: 'Đang đổi lựa chọn phát...'
                     })
-                  }
+                  }}
                   key={item.server_name}
+                  disabled={isDisabled}
                   className={classNames('rounded px-3 py-2 font-medium', {
                     'bg-white/40': isActive,
-                    'bg-white': !isActive
+                    'bg-white': !isActive,
+                    'cursor-not-allowed opacity-60': isDisabled
                   })}
                 >
                   <span className='flex items-center justify-center gap-1'>
@@ -432,6 +483,7 @@ const Film = () => {
                       </svg>
                     )}
                     {item.server_name}
+                    {isDisabled ? ' (Lỗi)' : ''}
                   </span>
                 </button>
               )
@@ -442,6 +494,11 @@ const Film = () => {
         )}
         <div className='container px-4 mt-2'>
           <p className='text-sm text-white/60'>Nếu phim bị lag, đứng hoặc lỗi, hãy bấm lựa chọn khác để thử lại.</p>
+          {selectedServer && !isServerPlayable(selectedServer) && (
+            <p className='mt-2 text-sm text-yellow-300'>
+              {selectedServer.server_name}: {getServerIssueMessage(selectedServer)}
+            </p>
+          )}
         </div>
         <div className='container px-4 mt-6'>
           <div className='block md:flex items-center justify-between mb-10'>
@@ -488,32 +545,38 @@ const Film = () => {
               Về trang giới thiệu phim
             </Link>
           </div>
-          <div className='flex items-center flex-wrap gap-x-3 gap-y-4 max-h-[250px] overflow-auto pb-2 pr-[6px]'>
-            {selectedServer?.server_data.map((item, index) => (
-              <button
-                title={`Tập ${item.name}`}
-                onClick={() => {
-                  setEpisodeSlug(item.slug)
-                  setPlaybackMode(getPreferredPlaybackMode(item))
-                  bumpPlayerReloadToken()
-                  setIsPlayerLoading(Boolean(item.link_embed || item.link_m3u8))
-                  setAttemptedServers([selectedServer.server_name])
-                  setPlayerMessage(`Đã đổi sang tập ${item.name}.`)
-                }}
-                disabled={item.slug === selectedEpisode?.slug}
-                key={index}
-                className={classNames(
-                  'flex-shrink-0 text-white whitespace-nowrap overflow-hidden text-lg min-w-[99px] h-[40px] px-4 rounded',
-                  {
-                    'bg-green-400': item.slug !== selectedEpisode?.slug,
-                    'bg-green-400/40': item.slug === selectedEpisode?.slug
-                  }
-                )}
-              >
-                Tập {item.name}
-              </button>
-            ))}
-          </div>
+          {selectedServer && isServerPlayable(selectedServer) ? (
+            <div className='flex items-center flex-wrap gap-x-3 gap-y-4 max-h-[250px] overflow-auto pb-2 pr-[6px]'>
+              {selectedServer.server_data.map((item, index) => (
+                <button
+                  title={`Tập ${item.name}`}
+                  onClick={() => {
+                    setEpisodeSlug(item.slug)
+                    setPlaybackMode(getPreferredPlaybackMode(item))
+                    bumpPlayerReloadToken()
+                    setIsPlayerLoading(Boolean(item.link_embed || item.link_m3u8))
+                    setAttemptedServers([selectedServer.server_name])
+                    setPlayerMessage(`Đã đổi sang tập ${item.name}.`)
+                  }}
+                  disabled={item.slug === selectedEpisode?.slug}
+                  key={index}
+                  className={classNames(
+                    'flex-shrink-0 text-white whitespace-nowrap overflow-hidden text-lg min-w-[99px] h-[40px] px-4 rounded',
+                    {
+                      'bg-green-400': item.slug !== selectedEpisode?.slug,
+                      'bg-green-400/40': item.slug === selectedEpisode?.slug
+                    }
+                  )}
+                >
+                  Tập {item.name}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className='rounded border border-yellow-400/40 bg-yellow-400/10 px-4 py-3 text-sm text-yellow-100'>
+              Provider này vẫn được hiển thị theo dữ liệu backend nhưng hiện không có source phát hợp lệ.
+            </div>
+          )}
         </div>
       </div>
     </>

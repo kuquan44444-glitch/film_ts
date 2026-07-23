@@ -97,6 +97,49 @@ const manualSourceLabels: Record<movieSource, string> = {
   nguonc: 'thuyết minh 2'
 }
 
+const getProviderIndex = (source: movieSource) => providerOrder.findIndex((item) => item === source) + 1
+
+const hasPlayableEpisodeLink = (episode: episodeData) => Boolean(episode.link_embed || episode.link_m3u8)
+
+const describeProviderError = (error: unknown) => {
+  if (!isAxiosError(error)) {
+    return error instanceof Error ? error.message : 'Lỗi không xác định'
+  }
+
+  const responseStatus = error.response?.status
+  const responseMessage =
+    toStringValue((error.response?.data as Record<string, unknown> | undefined)?.message) || error.message
+
+  if (responseStatus) {
+    return `HTTP ${responseStatus}${responseMessage ? ` - ${responseMessage}` : ''}`
+  }
+
+  if (error.code === 'ECONNABORTED') {
+    return `Timeout - ${responseMessage || 'Provider phản hồi quá chậm'}`
+  }
+
+  return responseMessage || 'Lỗi axios không xác định'
+}
+
+const logProviderDebug = (
+  message: string,
+  payload?: Record<string, unknown>,
+  level: 'info' | 'warn' | 'error' = 'info'
+) => {
+  const prefix = `[Provider Debug] ${message}`
+  if (level === 'warn') {
+    console.warn(prefix, payload ?? {})
+    return
+  }
+
+  if (level === 'error') {
+    console.error(prefix, payload ?? {})
+    return
+  }
+
+  console.info(prefix, payload ?? {})
+}
+
 const wrapData = <T>(payload: T, message = 'Tải dữ liệu thành công'): { data: data<T> } => ({
   data: {
     status: 'success',
@@ -484,19 +527,68 @@ const normalizeFilmResponse = ({
         string,
         unknown
       >[]
-      const serverData = rawServerItems.map(normalizeEpisodeData).filter((entry) => entry.link_embed || entry.link_m3u8)
-      if (!serverData.length) return null
+      const normalizedEpisodes = rawServerItems.map(normalizeEpisodeData)
+      const serverData = normalizedEpisodes.filter(hasPlayableEpisodeLink)
       const originalServerName = cleanServerName(toStringValue(server.server_name || `${provider.label} ${index + 1}`))
+      const totalEpisodes = normalizedEpisodes.length
+      const playableEpisodes = serverData.length
+      const serverStatus: episodeServer['status'] = playableEpisodes > 0 ? 'ready' : 'error'
+      const issue =
+        totalEpisodes === 0
+          ? 'Server không trả về tập nào'
+          : playableEpisodes === 0
+          ? 'Tất cả tập của server đều thiếu link embed và m3u8'
+          : undefined
+
+      if (totalEpisodes !== playableEpisodes) {
+        logProviderDebug(`Provider ${getProviderIndex(provider.key)} - lọc tập không hợp lệ`, {
+          provider: provider.label,
+          source: provider.key,
+          server: originalServerName,
+          totalEpisodes,
+          playableEpisodes,
+          removedEpisodes: totalEpisodes - playableEpisodes,
+          removedReason: 'Thiếu link embed và m3u8'
+        })
+      }
+
+      if (totalEpisodes === 0) return null
+
       return {
         server_name: originalServerName,
         original_server_name: originalServerName,
         source: provider.key,
         source_label: provider.label,
         priority: provider.priority,
+        total_episodes: totalEpisodes,
+        playable_episodes: playableEpisodes,
+        status: serverStatus,
+        issue,
         server_data: serverData
       }
     })
     .filter(Boolean) as episodeServer[]
+
+  const providerTotalEpisodes = servers.reduce((total, server) => total + server.total_episodes, 0)
+  const providerPlayableEpisodes = mergeEpisodeEntries(servers.flatMap((server) => server.server_data)).length
+  const providerStatus: 'ready' | 'error' = providerPlayableEpisodes > 0 ? 'ready' : 'error'
+  const providerIssue =
+    rawEpisodes.length === 0
+      ? 'Provider không trả về server nào'
+      : providerPlayableEpisodes === 0
+      ? 'Provider có dữ liệu nhưng không còn source phát hợp lệ sau normalize'
+      : undefined
+
+  logProviderDebug(`Provider ${getProviderIndex(provider.key)} - normalize hoàn tất`, {
+    provider: provider.label,
+    source: provider.key,
+    totalServers: rawEpisodes.length,
+    normalizedServers: servers.length,
+    totalEpisodes: providerTotalEpisodes,
+    playableEpisodes: providerPlayableEpisodes,
+    status: providerStatus,
+    issue: providerIssue || null
+  })
 
   const seoOnPage =
     (nestedData.seoOnPage as film['seoOnPage'] | undefined) ??
@@ -577,7 +669,12 @@ const normalizeFilmResponse = ({
         {
           source: provider.key,
           label: provider.label,
-          slug: baseItem.slug
+          slug: baseItem.slug,
+          provider_index: getProviderIndex(provider.key),
+          total_episodes: providerTotalEpisodes,
+          playable_episodes: providerPlayableEpisodes,
+          status: providerStatus,
+          issue: providerIssue
         }
       ],
       source_slugs: baseItem.source_slugs,
@@ -703,8 +800,24 @@ const mergeFilmData = (films: film[]) => {
     .flatMap((entry) => {
       const provider = providerMap[entry.item.source]
       const mergedServerData = mergeEpisodeEntries(entry.item.episodes.flatMap((server) => server.server_data))
+      const totalEpisodes =
+        entry.item.available_sources[0]?.total_episodes ||
+        entry.item.episodes.reduce((total, server) => total + server.total_episodes, 0)
+      const mergedStatus: episodeServer['status'] = mergedServerData.length > 0 ? 'ready' : 'error'
+      const issue =
+        entry.item.available_sources[0]?.issue ||
+        (!mergedServerData.length ? 'Provider không còn source phát hợp lệ sau merge' : undefined)
 
-      if (!mergedServerData.length) return []
+      logProviderDebug(`Provider ${getProviderIndex(entry.item.source)} - merge hoàn tất`, {
+        provider: entry.item.source_label,
+        source: entry.item.source,
+        totalEpisodes,
+        playableEpisodes: mergedServerData.length,
+        serversBeforeMerge: entry.item.episodes.length,
+        sourceLabels: entry.item.episodes.map((server) => server.original_server_name),
+        status: mergedStatus,
+        issue: issue || null
+      })
 
       return [
         {
@@ -715,6 +828,10 @@ const mergeFilmData = (films: film[]) => {
           source: entry.item.source,
           source_label: entry.item.source_label,
           priority: provider.priority,
+          total_episodes: totalEpisodes,
+          playable_episodes: mergedServerData.length,
+          status: mergedStatus,
+          issue,
           server_data: mergedServerData
         }
       ]
@@ -734,14 +851,25 @@ const mergeFilmData = (films: film[]) => {
     new Map(
       films.map((entry) => [
         entry.item.source,
-        {
-          source: entry.item.source,
-          label: entry.item.source_label,
-          slug: entry.item.slug
-        }
+        entry.item.available_sources[0] ??
+          (() => {
+            const playableEpisodes = mergeEpisodeEntries(
+              entry.item.episodes.flatMap((server) => server.server_data)
+            ).length
+            return {
+              source: entry.item.source,
+              label: entry.item.source_label,
+              slug: entry.item.slug,
+              provider_index: getProviderIndex(entry.item.source),
+              total_episodes: entry.item.episodes.reduce((total, server) => total + server.total_episodes, 0),
+              playable_episodes: playableEpisodes,
+              status: playableEpisodes > 0 ? 'ready' : 'error',
+              issue: undefined
+            }
+          })()
       ])
     ).values()
-  ).sort((left, right) => providerMap[left.source].priority - providerMap[right.source].priority)
+  ).sort((left, right) => left.provider_index - right.provider_index)
 
   return {
     ...primary,
@@ -897,9 +1025,48 @@ const filmApis = {
     })
   },
   async getFilm(slug: string): ApiEnvelope<film> {
+    logProviderDebug('Bắt đầu tải phim đa provider', {
+      slug,
+      providers: providerOrder.map((source) => ({
+        providerIndex: getProviderIndex(source),
+        source,
+        label: providerMap[source].label
+      }))
+    })
+
     const settledResults = await Promise.allSettled(
       providerOrder.map(async (source) => getFilmByProvider(providerMap[source], slug))
     )
+
+    settledResults.forEach((result, index) => {
+      const source = providerOrder[index]
+      const provider = providerMap[source]
+
+      if (result.status === 'fulfilled') {
+        const providerInfo = result.value.item.available_sources[0]
+        logProviderDebug(`Provider ${getProviderIndex(source)} - fetch thành công`, {
+          provider: provider.label,
+          source,
+          slug: result.value.item.slug,
+          totalEpisodes: providerInfo?.total_episodes ?? 0,
+          playableEpisodes: providerInfo?.playable_episodes ?? 0,
+          status: providerInfo?.status ?? 'error',
+          issue: providerInfo?.issue || null
+        })
+        return
+      }
+
+      logProviderDebug(
+        `Provider ${getProviderIndex(source)} - fetch thất bại`,
+        {
+          provider: provider.label,
+          source,
+          slug,
+          reason: describeProviderError(result.reason)
+        },
+        'warn'
+      )
+    })
 
     const successfulFilms = settledResults
       .flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []))
@@ -916,17 +1083,86 @@ const filmApis = {
     const fetchedSources = new Set(successfulFilms.map((entry) => entry.item.source))
     const primaryFilm = successfulFilms[0]
     const missingSources = providerOrder.filter((source) => !fetchedSources.has(source))
+    if (missingSources.length) {
+      logProviderDebug('Phát hiện provider còn thiếu, bắt đầu tìm slug thay thế', {
+        slug,
+        missingProviders: missingSources.map((source) => ({
+          providerIndex: getProviderIndex(source),
+          source,
+          label: providerMap[source].label
+        }))
+      })
+    }
+
     const alternativeResults = await Promise.allSettled(
       missingSources.map(async (source) => findAlternativeFilmForProvider(providerMap[source], primaryFilm.item))
     )
+
+    alternativeResults.forEach((result, index) => {
+      const source = missingSources[index]
+      const provider = providerMap[source]
+
+      if (result.status === 'fulfilled' && result.value) {
+        const providerInfo = result.value.item.available_sources[0]
+        logProviderDebug(`Provider ${getProviderIndex(source)} - tìm slug thay thế thành công`, {
+          provider: provider.label,
+          source,
+          matchedSlug: result.value.item.slug,
+          totalEpisodes: providerInfo?.total_episodes ?? 0,
+          playableEpisodes: providerInfo?.playable_episodes ?? 0,
+          status: providerInfo?.status ?? 'error',
+          issue: providerInfo?.issue || null
+        })
+        return
+      }
+
+      if (result.status === 'rejected') {
+        logProviderDebug(
+          `Provider ${getProviderIndex(source)} - không lấy được provider thay thế`,
+          {
+            provider: provider.label,
+            source,
+            reason: describeProviderError(result.reason)
+          },
+          'warn'
+        )
+        return
+      }
+
+      logProviderDebug(
+        `Provider ${getProviderIndex(source)} - bị loại khỏi kết quả cuối`,
+        {
+          provider: provider.label,
+          source,
+          reason: 'Không tìm được phim tương ứng đủ điểm khớp hoặc provider không có dữ liệu thay thế'
+        },
+        'warn'
+      )
+    })
+
     const alternativeFilms = alternativeResults.flatMap((result) =>
       result.status === 'fulfilled' && result.value ? [result.value] : []
     )
     const mergedFilms = [...successfulFilms, ...alternativeFilms].sort(
       (left, right) => providerMap[left.item.source].priority - providerMap[right.item.source].priority
     )
+    const mergedFilm = mergeFilmData(mergedFilms)
 
-    return wrapData(mergeFilmData(mergedFilms), 'Đã tải chi tiết phim từ nhiều nguồn')
+    logProviderDebug('Kết quả merge provider cuối cùng', {
+      slug,
+      totalProviders: mergedFilm.item.available_sources.length,
+      providers: mergedFilm.item.available_sources.map((provider) => ({
+        providerIndex: provider.provider_index,
+        source: provider.source,
+        label: provider.label,
+        totalEpisodes: provider.total_episodes,
+        playableEpisodes: provider.playable_episodes,
+        status: provider.status,
+        issue: provider.issue || null
+      }))
+    })
+
+    return wrapData(mergedFilm, 'Đã tải chi tiết phim từ nhiều nguồn')
   }
 }
 export default filmApis

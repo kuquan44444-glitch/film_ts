@@ -16,6 +16,11 @@ export type sourceLink = {
   source: movieSource
   label: string
   slug: string
+  provider_index: number
+  total_episodes: number
+  playable_episodes: number
+  status: 'ready' | 'error'
+  issue?: string
 }
 
 export type imageSet = {
@@ -102,6 +107,10 @@ export type episodeServer = {
   source: movieSource
   source_label: string
   priority: number
+  total_episodes: number
+  playable_episodes: number
+  status: 'ready' | 'error'
+  issue?: string
   server_data: episodeData[]
 }
 
