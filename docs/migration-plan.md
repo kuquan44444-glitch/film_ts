@@ -136,6 +136,15 @@ Tiêu chí hoàn thành:
 - Kết quả không lộ provider ở UI.
 - Chức năng filter/search/pagination cũ vẫn hoạt động ổn định trong phạm vi tương thích.
 
+### Trạng thái triển khai
+
+- Hoàn thành.
+- `filmApis.getListFilm()` đã chuyển sang `Promise.allSettled` trên toàn bộ provider, sau đó merge/dedupe/sort qua `aggregation-shared`.
+- `filmApis.getSearchFilm()` đã chuyển sang query đa provider thật, đi qua `search-aggregation.service`.
+- `filmApis.getHomeSections()` đã dùng dữ liệu aggregate và dedupe toàn màn hình qua `home-aggregation.service`.
+- `Home`, `List`, `Search` vẫn giữ facade `filmApis` để không làm lan rộng phạm vi refactor sang UI.
+- Đã build và lint thành công lại sau khi cài dependency local đúng version trong repo.
+
 ## Phase 3: Detail Aggregation Và Recommendation
 
 Mục tiêu:
@@ -161,6 +170,20 @@ Tiêu chí hoàn thành:
 - `Detail` đọc dữ liệu từ pipeline mới.
 - Metadata phong phú hơn nhưng không làm hỏng route/detail cũ.
 - Recommendation có thể được bật bằng unified data mà không lệch kiến trúc.
+
+### Trạng thái triển khai
+
+- Hoàn thành.
+- `filmApis.getFilm()` đã chuyển sang pipeline aggregate detail thật, gọi `aggregateDetailResults()` từ `detail-aggregation.service`.
+- Luồng detail hiện đã:
+  - gom kết quả detail nhiều provider
+  - thử match thêm provider còn thiếu qua tìm kiếm thay thế
+  - merge metadata field-by-field
+  - hợp nhất episode/server
+- `recommendation.service` đã được nối vào cuối pipeline detail để sinh danh sách đề xuất từ unified movie data.
+- `Detail.tsx` vẫn dùng facade cũ nhưng đọc dữ liệu đã được aggregate từ pipeline mới nên không phải đổi kiến trúc UI ngoài phạm vi Phase 3.
+- Đã xác nhận lại `build` và `lint` thành công trong môi trường sandbox sau khi cài dependency local.
+- Smoke check runtime gọi provider từ script Node trong sandbox còn bị chi phối bởi proxy/network của môi trường chạy; không ghi nhận đây là thay đổi kiến trúc hay hồi quy của Phase 3.
 
 ## Phase 4: Player Thống Nhất Và Tự Fallback
 
