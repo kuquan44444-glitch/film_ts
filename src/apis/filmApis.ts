@@ -11,6 +11,12 @@ import {
   option,
   taxonomyItem
 } from 'src/types'
+import providerAdapters, {
+  optionProviderOrder,
+  providerMap,
+  providerOrder
+} from './filmSourceAdapters'
+import type { ProviderAdapter, ProviderSearchParams } from './filmSourceAdapters'
 import PATH from '../utils/path'
 
 export type paramOption = {
@@ -23,56 +29,10 @@ export type paramOption = {
 
 type ApiEnvelope<T> = Promise<{ data: data<T> }>
 
-type ProviderConfig = {
-  key: movieSource
-  label: string
-  baseURL: string
-  priority: number
-}
-
-type SearchParams = {
-  keyword: string
-  page: string
-}
-
 const DEFAULT_IMAGE = '/img-error.webp'
+type SearchParams = ProviderSearchParams
 
-const providers: ProviderConfig[] = [
-  {
-    key: 'ophim',
-    label: 'OPhim',
-    baseURL: import.meta.env.VITE_API_URL || 'https://ophim1.com',
-    priority: 1
-  },
-  {
-    key: 'kkphim',
-    label: 'KKPhim',
-    baseURL: import.meta.env.VITE_KKPHIM_API_URL || 'https://phimapi.com',
-    priority: 2
-  },
-  {
-    key: 'vsmov',
-    label: 'VSMOV',
-    baseURL: import.meta.env.VITE_VSMOV_API_URL || 'https://vsmov.com/api',
-    priority: 3
-  },
-  {
-    key: 'nguonc',
-    label: 'Nguonc',
-    baseURL: import.meta.env.VITE_NGUONC_API_URL || 'https://phim.nguonc.com/api',
-    priority: 4
-  }
-]
-
-const providerMap = providers.reduce<Record<movieSource, ProviderConfig>>(
-  (result, provider) => {
-    result[provider.key] = provider
-    return result
-  },
-  {} as Record<movieSource, ProviderConfig>
-)
-
-const clients = providers.reduce<Record<movieSource, AxiosInstance>>(
+const clients = providerAdapters.reduce<Record<movieSource, AxiosInstance>>(
   (result, provider) => {
     result[provider.key] = axios.create({
       baseURL: provider.baseURL,
@@ -87,15 +47,6 @@ const clients = providers.reduce<Record<movieSource, AxiosInstance>>(
   },
   {} as Record<movieSource, AxiosInstance>
 )
-
-const providerOrder: movieSource[] = ['ophim', 'kkphim', 'vsmov', 'nguonc']
-const optionProviderOrder: movieSource[] = ['ophim', 'kkphim', 'vsmov']
-const manualSourceLabels: Record<movieSource, string> = {
-  ophim: 'vietsub 1',
-  kkphim: 'vietsub 2',
-  vsmov: 'thuyết minh 1',
-  nguonc: 'thuyết minh 2'
-}
 
 const wrapData = <T>(payload: T, message = 'Tải dữ liệu thành công'): { data: data<T> } => ({
   data: {
@@ -148,7 +99,7 @@ const buildImageCandidates = ({
   imageBase,
   kind
 }: {
-  provider: ProviderConfig
+  provider: ProviderAdapter
   value: string
   imageBase?: string
   kind: 'thumb' | 'poster'
@@ -282,7 +233,7 @@ const normalizeItem = ({
   imageBase
 }: {
   rawItem: Record<string, unknown>
-  provider: ProviderConfig
+  provider: ProviderAdapter
   imageBase?: string
 }): items => {
   const thumbCandidates = buildImageCandidates({
@@ -352,13 +303,13 @@ const normalizeListResponse = ({
   params
 }: {
   payload: Record<string, unknown>
-  provider: ProviderConfig
+  provider: ProviderAdapter
   type: string
   params?: paramOption
 }): list => {
-  const nestedData = (payload.data as Record<string, unknown> | undefined) ?? payload
-  const itemsData = (nestedData.items as unknown[]) ?? (payload.items as unknown[]) ?? []
-  const imageBase = toStringValue(nestedData.pathImage ?? payload.pathImage)
+  const nestedData = provider.extractListPayload(payload)
+  const itemsData = provider.extractListItems(payload)
+  const imageBase = toStringValue(provider.extractImageBase(payload))
   const mappedItems = itemsData.map((item) =>
     normalizeItem({
       rawItem: item as Record<string, unknown>,
@@ -401,9 +352,8 @@ const normalizeListResponse = ({
   }
 }
 
-const normalizeOptionResponse = (payload: Record<string, unknown>): option => {
-  const nestedData = (payload.data as Record<string, unknown> | undefined) ?? payload
-  const rawItems = ((nestedData.items as unknown[]) ?? (payload.items as unknown[]) ?? []) as Record<string, unknown>[]
+const normalizeOptionResponse = (payload: Record<string, unknown>, provider: ProviderAdapter): option => {
+  const rawItems = provider.extractOptionItems(payload) as Record<string, unknown>[]
   return {
     items: rawItems.map((item, index) => ({
       name: toStringValue(item.name),
@@ -459,24 +409,17 @@ const normalizeFilmResponse = ({
   provider
 }: {
   payload: Record<string, unknown>
-  provider: ProviderConfig
+  provider: ProviderAdapter
 }): film => {
-  const nestedData = (payload.data as Record<string, unknown> | undefined) ?? payload
-  const movieRaw =
-    (nestedData.item as Record<string, unknown> | undefined) ??
-    (payload.movie as Record<string, unknown> | undefined) ??
-    (nestedData.movie as Record<string, unknown> | undefined) ??
-    {}
-  const imageBase = toStringValue(nestedData.pathImage ?? payload.pathImage)
+  const nestedData = provider.extractListPayload(payload)
+  const movieRaw = provider.extractMovie(payload)
+  const imageBase = toStringValue(provider.extractImageBase(payload))
   const baseItem = normalizeItem({
     rawItem: movieRaw,
     provider,
     imageBase
   })
-  const rawEpisodes = ((nestedData.episodes as unknown[]) ?? (payload.episodes as unknown[]) ?? []) as Record<
-    string,
-    unknown
-  >[]
+  const rawEpisodes = provider.extractEpisodes(payload)
 
   const servers: episodeServer[] = rawEpisodes
     .map((server, index) => {
@@ -586,21 +529,21 @@ const normalizeFilmResponse = ({
   }
 }
 
-const getFilmByProvider = async (provider: ProviderConfig, slug: string) => {
-  const response = await clients[provider.key].get<Record<string, unknown>>(getProviderFilmEndpoint(provider.key, slug))
+const getFilmByProvider = async (provider: ProviderAdapter, slug: string) => {
+  const response = await clients[provider.key].get<Record<string, unknown>>(provider.buildFilmEndpoint(slug))
   return normalizeFilmResponse({
     payload: response.data,
     provider
   })
 }
 
-const searchFilmsByProvider = async (provider: ProviderConfig, keyword: string) => {
+const searchFilmsByProvider = async (provider: ProviderAdapter, keyword: string) => {
   const searchParams: SearchParams = {
     keyword,
     page: '1'
   }
-  const response = await clients[provider.key].get<Record<string, unknown>>(getProviderSearchEndpoint(provider.key), {
-    params: buildRequestParams(provider.key, searchParams)
+  const response = await clients[provider.key].get<Record<string, unknown>>(provider.buildSearchEndpoint(), {
+    params: provider.buildRequestParams(searchParams)
   })
 
   return normalizeListResponse({
@@ -663,7 +606,7 @@ const scoreFilmCandidate = (
   return score
 }
 
-const findAlternativeFilmForProvider = async (provider: ProviderConfig, baseItem: film['item']) => {
+const findAlternativeFilmForProvider = async (provider: ProviderAdapter, baseItem: film['item']) => {
   const keywords = uniqueStrings([baseItem.origin_name, baseItem.name, baseItem.slug.replace(/-/g, ' ')])
   let bestMatch: items | null = null
   let bestScore = 0
@@ -708,7 +651,7 @@ const mergeFilmData = (films: film[]) => {
 
       return [
         {
-          server_name: manualSourceLabels[entry.item.source],
+          server_name: provider.sourceButtonLabel,
           original_server_name:
             uniqueStrings(entry.item.episodes.map((server) => server.original_server_name)).join(' / ') ||
             provider.label,
@@ -775,39 +718,6 @@ const mergeFilmData = (films: film[]) => {
   }
 }
 
-const getProviderSearchEndpoint = (provider: movieSource) => {
-  if (provider === 'kkphim') return '/v1/api/tim-kiem'
-  if (provider === 'nguonc') return '/films/search'
-  return '/tim-kiem'
-}
-
-const getProviderListEndpoint = (provider: movieSource, type: string, params?: paramOption) => {
-  if (provider === 'kkphim') return `/v1/api/danh-sach/${type}`
-  if (provider !== 'nguonc') return `/danh-sach/${type}`
-
-  if (params?.category) return `/films/the-loai/${params.category}`
-  if (params?.country) return `/films/quoc-gia/${params.country}`
-  if (params?.year) return `/films/nam-phat-hanh/${params.year}`
-  if (type === PATH.new) return '/films/phim-moi-cap-nhat'
-  return `/films/danh-sach/${type}`
-}
-
-const getProviderFilmEndpoint = (provider: movieSource, slug: string) =>
-  provider === 'nguonc' ? `/film/${slug}` : `/phim/${slug}`
-
-const getProviderOptionEndpoint = (type: 'genres' | 'country') => (type === 'genres' ? '/the-loai' : '/quoc-gia')
-
-const buildRequestParams = (provider: movieSource, params?: paramOption | SearchParams) => {
-  if (provider === 'nguonc') {
-    return {
-      page: params?.page || '1',
-      keyword: 'keyword' in (params || {}) ? (params as SearchParams).keyword : undefined
-    }
-  }
-
-  return params
-}
-
 const isAxios404 = (error: unknown) => {
   if (!isAxiosError(error)) return false
   return (error as AxiosError).response?.status === 404
@@ -818,7 +728,7 @@ const firstSuccessful = async <T>({
   executor
 }: {
   sourceOrder: movieSource[]
-  executor: (provider: ProviderConfig) => Promise<T>
+  executor: (provider: ProviderAdapter) => Promise<T>
 }) => {
   let lastError: unknown
 
@@ -838,8 +748,8 @@ const filmApis = {
     return firstSuccessful({
       sourceOrder: optionProviderOrder,
       executor: async (provider) => {
-        const response = await clients[provider.key].get<Record<string, unknown>>(getProviderOptionEndpoint('genres'))
-        return wrapData(normalizeOptionResponse(response.data), `Đã tải thể loại từ ${provider.label}`)
+        const response = await clients[provider.key].get<Record<string, unknown>>(provider.buildOptionEndpoint('genres'))
+        return wrapData(normalizeOptionResponse(response.data, provider), `Đã tải thể loại từ ${provider.label}`)
       }
     })
   },
@@ -847,8 +757,8 @@ const filmApis = {
     return firstSuccessful({
       sourceOrder: optionProviderOrder,
       executor: async (provider) => {
-        const response = await clients[provider.key].get<Record<string, unknown>>(getProviderOptionEndpoint('country'))
-        return wrapData(normalizeOptionResponse(response.data), `Đã tải quốc gia từ ${provider.label}`)
+        const response = await clients[provider.key].get<Record<string, unknown>>(provider.buildOptionEndpoint('country'))
+        return wrapData(normalizeOptionResponse(response.data, provider), `Đã tải quốc gia từ ${provider.label}`)
       }
     })
   },
@@ -856,12 +766,9 @@ const filmApis = {
     return firstSuccessful({
       sourceOrder: providerOrder,
       executor: async (provider) => {
-        const response = await clients[provider.key].get<Record<string, unknown>>(
-          getProviderListEndpoint(provider.key, type, params),
-          {
-            params: buildRequestParams(provider.key, params)
-          }
-        )
+        const response = await clients[provider.key].get<Record<string, unknown>>(provider.buildListEndpoint(type, params), {
+          params: provider.buildRequestParams(params)
+        })
         return wrapData(
           normalizeListResponse({
             payload: response.data,
@@ -878,12 +785,9 @@ const filmApis = {
     return firstSuccessful({
       sourceOrder: providerOrder,
       executor: async (provider) => {
-        const response = await clients[provider.key].get<Record<string, unknown>>(
-          getProviderSearchEndpoint(provider.key),
-          {
-            params: buildRequestParams(provider.key, params)
-          }
-        )
+        const response = await clients[provider.key].get<Record<string, unknown>>(provider.buildSearchEndpoint(), {
+          params: provider.buildRequestParams(params)
+        })
         return wrapData(
           normalizeListResponse({
             payload: response.data,

@@ -4,8 +4,9 @@ import { Helmet } from 'react-helmet-async'
 import { useQuery } from 'react-query'
 import { Link, createSearchParams, useParams } from 'react-router-dom'
 import filmApis from 'src/apis/filmApis'
+import { getPlaybackPreference } from 'src/apis/filmSourceAdapters'
 import { useQueryConfig } from 'src/hooks'
-import { episodeData, episodeServer } from 'src/types'
+import type { episodeData, episodeServer } from 'src/types'
 import PATH from 'src/utils/path'
 import FacebookShareButton from 'react-share/es/FacebookShareButton'
 
@@ -74,6 +75,7 @@ const Film = () => {
   const [playerMessage, setPlayerMessage] = useState<string>('')
   const [isPlayerLoading, setIsPlayerLoading] = useState<boolean>(false)
   const [attemptedServers, setAttemptedServers] = useState<string[]>([])
+  const [attemptedPlaybackModes, setAttemptedPlaybackModes] = useState<PlaybackMode[]>([])
   const [playbackMode, setPlaybackMode] = useState<PlaybackMode>('embed')
   const [playerReloadToken, setPlayerReloadToken] = useState<number>(0)
   const fallbackTimerRef = useRef<number>()
@@ -119,9 +121,21 @@ const Film = () => {
     setPlayerReloadToken((previous) => previous + 1)
   }, [])
 
+  const getAvailablePlaybackModes = useCallback((episode?: episodeData, server?: episodeServer): PlaybackMode[] => {
+    if (!episode) return []
+
+    const playbackPreference = getPlaybackPreference(server?.source)
+    return playbackPreference.filter((mode, index, modes) => {
+      const playbackUrl = mode === 'm3u8' ? episode.link_m3u8 : episode.link_embed
+      if (!playbackUrl || !/^https?:\/\//i.test(playbackUrl)) return false
+      return modes.indexOf(mode) === index
+    })
+  }, [])
+
   const getPreferredPlaybackMode = useCallback(
-    (episode?: episodeData): PlaybackMode => (episode?.link_m3u8 ? 'm3u8' : 'embed'),
-    []
+    (episode?: episodeData, server?: episodeServer): PlaybackMode =>
+      getAvailablePlaybackModes(episode, server)[0] || 'embed',
+    [getAvailablePlaybackModes]
   )
 
   const getEpisodeForServer = useCallback((server: episodeServer, preferredEpisode?: episodeData) => {
@@ -147,12 +161,14 @@ const Film = () => {
       }
     ) => {
       const nextEpisode = getEpisodeForServer(server, options?.preferredEpisode)
+      const nextPlaybackMode = getPreferredPlaybackMode(nextEpisode, server)
       clearFallbackTimer()
       destroyHls()
       bumpPlayerReloadToken()
       setNameServer(server.server_name)
       setEpisodeSlug(nextEpisode?.slug || '')
-      setPlaybackMode(getPreferredPlaybackMode(nextEpisode))
+      setPlaybackMode(nextPlaybackMode)
+      setAttemptedPlaybackModes(nextEpisode ? [nextPlaybackMode] : [])
       setIsPlayerLoading(Boolean(nextEpisode?.link_embed || nextEpisode?.link_m3u8))
       setPlayerMessage(options?.message || PLAYER_LOADING_MESSAGE)
       setAttemptedServers((previous) => {
@@ -186,11 +202,16 @@ const Film = () => {
 
   const handlePlaybackFailure = useCallback(
     (reason: string) => {
-      if (playbackMode === 'm3u8' && selectedEpisode?.link_embed) {
+      const fallbackPlaybackMode = getAvailablePlaybackModes(selectedEpisode, selectedServer).find(
+        (mode) => mode !== playbackMode && !attemptedPlaybackModes.includes(mode)
+      )
+
+      if (fallbackPlaybackMode) {
         clearFallbackTimer()
         destroyHls()
         bumpPlayerReloadToken()
-        setPlaybackMode('embed')
+        setPlaybackMode(fallbackPlaybackMode)
+        setAttemptedPlaybackModes((previous) => Array.from(new Set([...previous, fallbackPlaybackMode])))
         setIsPlayerLoading(true)
         setPlayerMessage(`${reason}. Đang thử cách phát khác.`)
         return
@@ -198,7 +219,17 @@ const Film = () => {
 
       handleFallback(reason)
     },
-    [bumpPlayerReloadToken, clearFallbackTimer, destroyHls, handleFallback, playbackMode, selectedEpisode]
+    [
+      attemptedPlaybackModes,
+      bumpPlayerReloadToken,
+      clearFallbackTimer,
+      destroyHls,
+      getAvailablePlaybackModes,
+      handleFallback,
+      playbackMode,
+      selectedEpisode,
+      selectedServer
+    ]
   )
 
   useEffect(() => {
@@ -209,6 +240,7 @@ const Film = () => {
     setPlayerMessage('')
     setIsPlayerLoading(false)
     setAttemptedServers([])
+    setAttemptedPlaybackModes([])
     setPlaybackMode('embed')
     setPlayerReloadToken(0)
   }, [clearFallbackTimer, destroyHls, slug])
@@ -230,7 +262,9 @@ const Film = () => {
 
     if (nextEpisode && episodeSlug !== nextEpisode.slug) {
       setEpisodeSlug(nextEpisode.slug)
-      setPlaybackMode(getPreferredPlaybackMode(nextEpisode))
+      const nextPlaybackMode = getPreferredPlaybackMode(nextEpisode, selectedServer)
+      setPlaybackMode(nextPlaybackMode)
+      setAttemptedPlaybackModes([nextPlaybackMode])
     }
   }, [episodeSlug, getPreferredPlaybackMode, selectedServer])
 
@@ -493,11 +527,13 @@ const Film = () => {
               <button
                 title={`Tập ${item.name}`}
                 onClick={() => {
+                  const nextPlaybackMode = getPreferredPlaybackMode(item, selectedServer)
                   setEpisodeSlug(item.slug)
-                  setPlaybackMode(getPreferredPlaybackMode(item))
+                  setPlaybackMode(nextPlaybackMode)
                   bumpPlayerReloadToken()
                   setIsPlayerLoading(Boolean(item.link_embed || item.link_m3u8))
                   setAttemptedServers([selectedServer.server_name])
+                  setAttemptedPlaybackModes([nextPlaybackMode])
                   setPlayerMessage(`Đã đổi sang tập ${item.name}.`)
                 }}
                 disabled={item.slug === selectedEpisode?.slug}
