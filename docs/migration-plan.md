@@ -218,6 +218,19 @@ Tiêu chí hoàn thành:
 - Tự fallback giữa candidate hợp lệ khi phát lỗi.
 - Không lộ tên provider cho người dùng.
 
+### Trạng thái triển khai
+
+- Đang triển khai tiếp theo đúng phạm vi `Phase 4`, chưa đụng sang `Phase 5`.
+- `Film.tsx` đã dùng unified player dựa trên `video + hls.js`, không còn phụ thuộc `iframe` cho luồng phát chính.
+- UI watch page đã có hai lớp chọn thủ công:
+  - `Phiên bản`: `Vietsub` / `Thuyết minh`
+  - `Máy chủ`: `Server 1`, `Server 2`, `Server 3`
+- Metadata server aggregate hiện mang thêm `version_label`, được suy ra từ `lang` của provider và tên server gốc để phục vụ selector phiên bản mà không lộ provider ra UI.
+- Khi người dùng bấm chọn lại một server sau auto fallback, player luôn resolve lại candidate thay vì chỉ hiển thị `Đang chuyển server...` nhưng không đổi nguồn phát.
+- Khi người dùng chọn server thủ công, bước chọn candidate sẽ ưu tiên cứng server đó trước; fallback vẫn tiếp tục hoạt động với các candidate còn lại nếu server vừa chọn lỗi thật.
+- Local playback preference hiện lưu thêm `preferredVersionLabel` để giữ lại phiên bản đã chọn giữa các lần xem.
+- Đã xác nhận lại `npm install`, `npm run build` và `npm run lint` thành công sau thay đổi của `Phase 4`.
+
 ## Phase 5: Proxy Mode Runtime
 
 Mục tiêu:

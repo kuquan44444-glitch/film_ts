@@ -44,5 +44,8 @@ Không có file code ứng dụng nào bị sửa trong bước này.
 - `List`, `Home`, `Search` vẫn đi qua facade `filmApis` để hạn chế lan rộng phạm vi refactor.
 - `Detail` đã đi qua `detail-aggregation.service` và có recommendation từ `recommendation.service`.
 - `build` và `lint` hiện chạy sạch lại sau khi cài dependency local đúng version trong repo.
-- Chưa thay player hiện tại sang unified player không `iframe`.
+- `Film` đã dùng unified player `video + hls.js`, không còn fallback sang `iframe`.
+- `Film` đã có chọn thủ công `Phiên bản` (`Vietsub` / `Thuyết minh`) và `Máy chủ` (`Server 1/2/3`) theo dữ liệu aggregate hiện có.
+- Luồng đổi lại server đã được sửa để luôn resolve lại nguồn phát khi người dùng chọn tay, kể cả sau khi auto fallback vừa chuyển sang server khác.
+- Local playback preference hiện lưu thêm `preferredVersionLabel` bên cạnh `preferredServerIndex` và `preferredPlaybackMode`.
 - Chưa bật proxy runtime từ UI.

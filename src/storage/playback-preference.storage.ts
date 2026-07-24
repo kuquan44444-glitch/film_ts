@@ -3,13 +3,15 @@ import type { PlaybackMode } from 'src/providers/base/provider.types'
 export type PlaybackPreference = {
   preferredServerIndex: number
   preferredPlaybackMode: PlaybackMode
+  preferredVersionLabel: string
 }
 
 const STORAGE_KEY = 'vphim.playback-preference'
 
 const defaultPreference: PlaybackPreference = {
   preferredServerIndex: 0,
-  preferredPlaybackMode: 'm3u8'
+  preferredPlaybackMode: 'm3u8',
+  preferredVersionLabel: ''
 }
 
 const isBrowser = () => typeof window !== 'undefined'
