@@ -24,6 +24,7 @@ export type AggregatedSearchResult = {
 
 export type AggregatedDetailResult = {
   detail: UnifiedMovieDetail
+  legacyFilm: film
 }
 
 export type LegacyGatewayResult = {

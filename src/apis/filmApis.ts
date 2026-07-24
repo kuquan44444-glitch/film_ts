@@ -1,20 +1,11 @@
 import axios, { AxiosError, AxiosInstance, isAxiosError } from 'axios'
-import {
-  data,
-  episodeData,
-  episodeServer,
-  film,
-  imageSet,
-  items,
-  list,
-  movieSource,
-  option,
-  taxonomyItem
-} from 'src/types'
+import { data, episodeData, episodeServer, film, items, list, movieSource, option, taxonomyItem } from 'src/types'
 import providerAdapters, { optionProviderOrder, providerMap, providerOrder } from './filmSourceAdapters'
 import type { ProviderAdapter, ProviderSearchParams } from './filmSourceAdapters'
 import PATH from '../utils/path'
+import { aggregateDetailResults, mapLegacyItemToUnifiedMovie } from 'src/services/detail-aggregation.service'
 import { aggregateHomeSections } from 'src/services/home-aggregation.service'
+import { buildRecommendations } from 'src/services/recommendation.service'
 import { aggregateSearchResults } from 'src/services/search-aggregation.service'
 import { aggregateLegacyItems, sortAggregatedEntries } from 'src/services/aggregation-shared'
 
@@ -379,39 +370,6 @@ const normalizeEpisodeData = (input: Record<string, unknown>): episodeData => ({
   link_m3u8: toStringValue(input.link_m3u8 ?? input.m3u8)
 })
 
-const createEpisodeMergeKey = (episode: episodeData) => {
-  const slugValue = slugify(episode.slug)
-  if (slugValue) return `slug:${slugValue}`
-
-  const filenameValue = slugify(episode.filename)
-  if (filenameValue) return `file:${filenameValue}`
-
-  return `name:${slugify(episode.name || 'full')}`
-}
-
-const mergeEpisodeEntries = (episodes: episodeData[]) =>
-  Array.from(
-    episodes.reduce<Map<string, episodeData>>((result, episode) => {
-      const mergeKey = createEpisodeMergeKey(episode)
-      const currentEntry = result.get(mergeKey)
-
-      if (!currentEntry) {
-        result.set(mergeKey, episode)
-        return result
-      }
-
-      result.set(mergeKey, {
-        ...currentEntry,
-        name: currentEntry.name || episode.name,
-        slug: currentEntry.slug || episode.slug,
-        filename: currentEntry.filename || episode.filename,
-        link_embed: currentEntry.link_embed || episode.link_embed,
-        link_m3u8: currentEntry.link_m3u8 || episode.link_m3u8
-      })
-      return result
-    }, new Map())
-  ).map(([, value]) => value)
-
 const normalizeFilmResponse = ({
   payload,
   provider
@@ -644,88 +602,6 @@ const findAlternativeFilmForProvider = async (provider: ProviderAdapter, baseIte
   }
 }
 
-const mergeFilmData = (films: film[]) => {
-  const [primary, ...restFilms] = films
-  const mergedImageUrls: imageSet = {
-    thumb: uniqueStrings(films.flatMap((entry) => entry.item.image_urls.thumb)),
-    poster: uniqueStrings(films.flatMap((entry) => entry.item.image_urls.poster))
-  }
-  const mergedEpisodes = films
-    .flatMap((entry) => {
-      const provider = providerMap[entry.item.source]
-      const mergedServerData = mergeEpisodeEntries(entry.item.episodes.flatMap((server) => server.server_data))
-
-      if (!mergedServerData.length) return []
-
-      return [
-        {
-          server_name: provider.sourceButtonLabel,
-          original_server_name:
-            uniqueStrings(entry.item.episodes.map((server) => server.original_server_name)).join(' / ') ||
-            provider.label,
-          source: entry.item.source,
-          source_label: entry.item.source_label,
-          priority: provider.priority,
-          server_data: mergedServerData
-        }
-      ]
-    })
-    .sort((left, right) => left.priority - right.priority)
-  const mergedCategories = Array.from(
-    new Map(films.flatMap((entry) => entry.item.category).map((item) => [item.slug, item])).values()
-  )
-  const mergedCountries = Array.from(
-    new Map(films.flatMap((entry) => entry.item.country).map((item) => [item.slug, item])).values()
-  )
-  const mergedSourceSlugs = films.reduce<Partial<Record<movieSource, string>>>((result, entry) => {
-    Object.assign(result, entry.item.source_slugs)
-    return result
-  }, {})
-  const availableSources = Array.from(
-    new Map(
-      films.map((entry) => [
-        entry.item.source,
-        {
-          source: entry.item.source,
-          label: entry.item.source_label,
-          slug: entry.item.slug
-        }
-      ])
-    ).values()
-  ).sort((left, right) => providerMap[left.source].priority - providerMap[right.source].priority)
-
-  return {
-    ...primary,
-    seoOnPage: {
-      ...primary.seoOnPage,
-      og_image: uniqueStrings([
-        ...(primary.seoOnPage.og_image || []),
-        ...mergedImageUrls.poster,
-        ...mergedImageUrls.thumb
-      ])
-    },
-    item: {
-      ...primary.item,
-      content: primary.item.content || restFilms.find((entry) => entry.item.content)?.item.content || '',
-      trailer_url:
-        primary.item.trailer_url || restFilms.find((entry) => entry.item.trailer_url)?.item.trailer_url || '',
-      time: primary.item.time || restFilms.find((entry) => entry.item.time)?.item.time || '',
-      quality: primary.item.quality || restFilms.find((entry) => entry.item.quality)?.item.quality || '',
-      lang: primary.item.lang || restFilms.find((entry) => entry.item.lang)?.item.lang || '',
-      actor: uniqueStrings(films.flatMap((entry) => entry.item.actor)),
-      director: uniqueStrings(films.flatMap((entry) => entry.item.director)),
-      category: mergedCategories,
-      country: mergedCountries,
-      image_urls: mergedImageUrls,
-      thumb_url: mergedImageUrls.thumb[0] || primary.item.thumb_url,
-      poster_url: mergedImageUrls.poster[0] || primary.item.poster_url,
-      available_sources: availableSources,
-      source_slugs: mergedSourceSlugs,
-      episodes: mergedEpisodes
-    }
-  }
-}
-
 type ProviderListResult = {
   provider: ProviderAdapter
   data: list
@@ -765,6 +641,86 @@ const getSearchByProvider = async (provider: ProviderAdapter, params: SearchPara
       params
     })
   }
+}
+
+const createRecommendationKeyword = (baseFilm: film) => {
+  const titleCandidate = uniqueStrings([baseFilm.item.origin_name, baseFilm.item.name])[0] || ''
+  const normalizedTitle = titleCandidate
+    .split(/[:(|-]/)[0]
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return normalizedTitle.split(' ').slice(0, 6).join(' ').trim()
+}
+
+const getRecommendationsForFilm = async (baseFilm: film) => {
+  const primaryCategory = baseFilm.item.category[0]?.slug
+  const primaryCountry = baseFilm.item.country[0]?.slug
+  const searchKeyword = createRecommendationKeyword(baseFilm)
+  const recommendationRequests = providerOrder.flatMap((source) => {
+    const provider = providerMap[source]
+    const requests: Array<Promise<ProviderListResult>> = []
+
+    if (primaryCategory) {
+      requests.push(
+        getListByProvider(provider, PATH.new, {
+          page: '1',
+          category: primaryCategory
+        })
+      )
+    }
+
+    if (primaryCountry) {
+      requests.push(
+        getListByProvider(provider, PATH.new, {
+          page: '1',
+          country: primaryCountry
+        })
+      )
+    }
+
+    if (searchKeyword) {
+      requests.push(
+        getSearchByProvider(provider, {
+          keyword: searchKeyword,
+          page: '1'
+        })
+      )
+    }
+
+    return requests
+  })
+
+  if (!recommendationRequests.length) return []
+
+  const settledResults = await Promise.allSettled(recommendationRequests)
+  const aggregateEntries = sortAggregatedEntries(
+    aggregateLegacyItems(
+      settledResults
+        .flatMap((result) => (result.status === 'fulfilled' ? result.value.data.items : []))
+        .map((item, position) => ({
+          item,
+          position
+        }))
+    ),
+    'modified.time'
+  )
+  const legacyItemsById = new Map<string, items>()
+  const unifiedCandidates = aggregateEntries.map((entry) => {
+    const unifiedMovie = mapLegacyItemToUnifiedMovie(entry.item)
+    legacyItemsById.set(unifiedMovie.id, entry.item)
+    return unifiedMovie
+  })
+  const recommendationMovies = await buildRecommendations({
+    currentMovie: mapLegacyItemToUnifiedMovie(baseFilm.item),
+    candidates: unifiedCandidates,
+    seenMovieIds: [mapLegacyItemToUnifiedMovie(baseFilm.item).id],
+    limit: 10
+  })
+
+  return recommendationMovies
+    .map((movie) => legacyItemsById.get(movie.id))
+    .filter((item): item is items => Boolean(item))
 }
 
 const buildAggregatedList = ({
@@ -1020,8 +976,18 @@ const filmApis = {
     const mergedFilms = [...successfulFilms, ...alternativeFilms].sort(
       (left, right) => providerMap[left.item.source].priority - providerMap[right.item.source].priority
     )
+    const aggregatedDetail = await aggregateDetailResults({
+      films: mergedFilms
+    })
+    const recommendations = await getRecommendationsForFilm(aggregatedDetail.legacyFilm)
 
-    return wrapData(mergeFilmData(mergedFilms), 'Đã tải chi tiết phim từ nhiều nguồn')
+    return wrapData(
+      {
+        ...aggregatedDetail.legacyFilm,
+        recommendations
+      },
+      'Đã tải chi tiết phim từ nhiều nguồn'
+    )
   }
 }
 export default filmApis
