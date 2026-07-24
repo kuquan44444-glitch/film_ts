@@ -40,6 +40,14 @@ Việc cần làm:
 
 Không đổi kiến trúc ở bước này.
 
+### Ghi nhận sau baseline
+
+- Môi trường sandbox chưa cài dependency local, nên cần chạy `npm install` trước khi build/lint ổn định.
+- Sau khi cài dependency local:
+  - `build` chạy thành công với `typescript@5.0.2`
+  - `lint` chạy thành công qua script dùng `ESLINT_USE_FLAT_CONFIG=false`
+- Đây là xử lý tương thích môi trường/tooling, không thay đổi kiến trúc ứng dụng.
+
 ## Phase 1: Nền Tảng Kiến Trúc
 
 Mục tiêu:
@@ -80,6 +88,24 @@ Tiêu chí hoàn thành:
 - Code build thành công.
 - Kiến trúc file mới có thể dùng cho các phase sau.
 - Chưa làm thay đổi hành vi UI theo hướng phá vỡ flow cũ.
+
+### Trạng thái triển khai
+
+- Hoàn thành.
+- Đã tạo:
+  - `src/providers/base`
+  - `src/providers/adapters`
+  - `src/providers/resolvers`
+  - `src/providers/registry.ts`
+  - `src/domain`
+  - `src/services`
+  - `src/storage`
+  - `src/hooks/useProxyMode.ts`
+  - `src/apis/movieGateway.ts`
+- `src/apis/filmSourceAdapters.ts` hiện là lớp tương thích, re-export từ provider registry mới.
+- `filmApis` vẫn được giữ để không buộc refactor UI ngay trong Phase 1.
+- Đã build thành công sau khi hoàn tất Phase 1.
+- Chưa bắt đầu `Phase 2`.
 
 ## Phase 2: Aggregation Cho List/Home/Search
 
