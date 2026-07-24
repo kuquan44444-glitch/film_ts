@@ -18,8 +18,9 @@ type BuildPlaybackCandidatesInput = {
 }
 
 type SelectPlaybackCandidateOptions = {
-  lockedServerId?: string
   preferredServerIds?: string[]
+  preferredVersionKey?: string
+  preferredVersionLabel?: string
 }
 
 const PROBE_TIMEOUT_MS = 4500
@@ -160,7 +161,9 @@ export const buildPlaybackCandidates = async ({
           episodeKey: getEpisodeMergeKey(matchedEpisode),
           episodeSlug: matchedEpisode.slug,
           episodeName: matchedEpisode.name,
+          versionKey: `${server.source}:${server.source_code}:${server.version_label || 'Mặc định'}`.toLowerCase(),
           versionLabel: server.version_label || 'Mặc định',
+          sourceCode: server.source_code || server.source_label || server.source.toUpperCase(),
           playbackUrl: resolveProxyUrl({
             target: 'media',
             providerKey: entry.providerKey,
@@ -197,30 +200,74 @@ const getRuntimeCandidateScore = (candidate: PlaybackCandidate) => {
   return candidate.healthScore + health.successCount * 4 - health.failureCount * 6
 }
 
+const normalizeVersionLabel = (value?: string) => value?.trim().toLowerCase() || ''
+
+const compareCandidatePriority = (
+  left: PlaybackCandidate,
+  right: PlaybackCandidate,
+  options: SelectPlaybackCandidateOptions
+) => {
+  const leftPreferredVersionPriority =
+    options.preferredVersionKey && left.versionKey === options.preferredVersionKey ? 1 : 0
+  const rightPreferredVersionPriority =
+    options.preferredVersionKey && right.versionKey === options.preferredVersionKey ? 1 : 0
+  const preferredVersionLabel = normalizeVersionLabel(options.preferredVersionLabel)
+  const leftEquivalentVersionPriority =
+    preferredVersionLabel && normalizeVersionLabel(left.versionLabel) === preferredVersionLabel ? 1 : 0
+  const rightEquivalentVersionPriority =
+    preferredVersionLabel && normalizeVersionLabel(right.versionLabel) === preferredVersionLabel ? 1 : 0
+  const preferredServerIdSet = new Set(options.preferredServerIds ?? [])
+  const leftPreferredServerPriority = preferredServerIdSet.has(left.serverId) ? 1 : 0
+  const rightPreferredServerPriority = preferredServerIdSet.has(right.serverId) ? 1 : 0
+
+  if (leftPreferredVersionPriority !== rightPreferredVersionPriority) {
+    return rightPreferredVersionPriority - leftPreferredVersionPriority
+  }
+
+  if (leftEquivalentVersionPriority !== rightEquivalentVersionPriority) {
+    return rightEquivalentVersionPriority - leftEquivalentVersionPriority
+  }
+
+  if (leftPreferredServerPriority !== rightPreferredServerPriority) {
+    return rightPreferredServerPriority - leftPreferredServerPriority
+  }
+
+  return getRuntimeCandidateScore(right) - getRuntimeCandidateScore(left)
+}
+
 export const selectPlaybackCandidate = (
   candidates: PlaybackCandidate[],
   options: SelectPlaybackCandidateOptions = {}
 ): PlaybackSelectionResult => {
-  const preferredServerIdSet = new Set(options.preferredServerIds ?? [])
-  const rankedCandidates = [...candidates].sort((left, right) => {
-    const leftLockedPriority = options.lockedServerId && left.serverId === options.lockedServerId ? 1 : 0
-    const rightLockedPriority = options.lockedServerId && right.serverId === options.lockedServerId ? 1 : 0
-    const leftPreferredPriority = preferredServerIdSet.has(left.serverId) ? 1 : 0
-    const rightPreferredPriority = preferredServerIdSet.has(right.serverId) ? 1 : 0
+  const rankedCandidates = [...candidates].sort((left, right) => compareCandidatePriority(left, right, options))
+  const selected = rankedCandidates[0] ?? null
 
-    if (leftLockedPriority !== rightLockedPriority) {
-      return rightLockedPriority - leftLockedPriority
+  if (!selected) {
+    return {
+      selected: null,
+      fallbackQueue: []
     }
+  }
 
-    if (leftPreferredPriority !== rightPreferredPriority) {
-      return rightPreferredPriority - leftPreferredPriority
-    }
-
-    return getRuntimeCandidateScore(right) - getRuntimeCandidateScore(left)
-  })
+  const selectedVersionLabel = normalizeVersionLabel(selected.versionLabel)
+  const sameVersionCandidates = rankedCandidates.filter(
+    (candidate) => candidate !== selected && candidate.versionKey === selected.versionKey
+  )
+  const equivalentVersionCandidates = rankedCandidates.filter(
+    (candidate) =>
+      candidate !== selected &&
+      candidate.versionKey !== selected.versionKey &&
+      normalizeVersionLabel(candidate.versionLabel) === selectedVersionLabel
+  )
+  const otherCandidates = rankedCandidates.filter(
+    (candidate) =>
+      candidate !== selected &&
+      candidate.versionKey !== selected.versionKey &&
+      normalizeVersionLabel(candidate.versionLabel) !== selectedVersionLabel
+  )
 
   return {
-    selected: rankedCandidates[0] ?? null,
-    fallbackQueue: rankedCandidates.slice(1)
+    selected,
+    fallbackQueue: [...sameVersionCandidates, ...equivalentVersionCandidates, ...otherCandidates]
   }
 }

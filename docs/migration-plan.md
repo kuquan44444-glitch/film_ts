@@ -222,14 +222,14 @@ Tiêu chí hoàn thành:
 
 ### Trạng thái triển khai
 
-- Đang triển khai tiếp theo đúng phạm vi `Phase 4`, chưa đụng sang `Phase 5`.
+- Hoàn thành.
 - `Film.tsx` đã dùng unified player dựa trên `video + hls.js`, không còn phụ thuộc `iframe` cho luồng phát chính.
-- UI watch page đã có hai lớp chọn thủ công:
-  - `Phiên bản`: `O - Vietsub`, `K - Thuyết minh`, `VS - Vietsub`... theo đúng tổ hợp nguồn + bản xem thực sự tồn tại
-  - `Máy chủ`: `O Server 1`, `O Server 2`, `K Server 1`... khi cùng nguồn/bản xem có nhiều server
-- Metadata server aggregate hiện giữ toàn bộ server thật từ adapter/provider, đồng thời mang thêm `source_code`, `version_label` để selector không còn hardcode `Vietsub/Thuyết minh` hay `Server 1/2/3`.
-- Khi người dùng bấm chọn lại một server sau auto fallback, player luôn resolve lại candidate thay vì chỉ hiển thị `Đang chuyển server...` nhưng không đổi nguồn phát.
-- Khi người dùng chọn server thủ công, bước chọn candidate sẽ ưu tiên cứng server đó trước; fallback vẫn tiếp tục hoạt động với các candidate còn lại nếu server vừa chọn lỗi thật.
+- UI watch page hiện chỉ còn một lớp chọn thủ công:
+  - `Phiên bản`: `O · Vietsub`, `K · Thuyết minh`, `VS · Lồng tiếng`... theo đúng tổ hợp nguồn + bản xem thực sự tồn tại
+- UI không còn hiển thị `Máy chủ`; metadata server aggregate vẫn giữ toàn bộ server thật từ adapter/provider để hệ thống tự chọn và tự fallback nội bộ.
+- Luồng mở phim hiện tự thu thập candidate từ toàn bộ provider media khả dụng, probe link phát, chấm điểm độ sống/tốc độ và tự chọn phiên bản phát tốt nhất.
+- Khi đã chọn được phiên bản, player tự ưu tiên server nhanh nhất trong cùng phiên bản; nếu lỗi thì fallback sang server khác của cùng phiên bản trước, rồi mới sang phiên bản tương đương ở provider khác.
+- Bước chuẩn hóa `version_label` đã giữ đúng ba nhãn `Vietsub`, `Thuyết minh`, `Lồng tiếng`; không còn gộp `Lồng tiếng` thành `Thuyết minh`.
 - Local playback preference hiện lưu thêm `preferredVersionLabel` và `preferredVersionKey` để giữ lại đúng tổ hợp nguồn + bản xem giữa các lần xem.
 - Đã xác nhận lại `npm install`, `npm run build` và `npm run lint` thành công sau thay đổi của `Phase 4`.
 

@@ -45,7 +45,9 @@ Không có file code ứng dụng nào bị sửa trong bước này.
 - `Detail` đã đi qua `detail-aggregation.service` và có recommendation từ `recommendation.service`.
 - `build` và `lint` hiện chạy sạch lại sau khi cài dependency local đúng version trong repo.
 - `Film` đã dùng unified player `video + hls.js`, không còn fallback sang `iframe`.
-- `Film` hiện hiển thị selector source-aware theo dữ liệu aggregate thật: `Phiên bản` dạng `O - Vietsub`, `K - Thuyết minh`, `VS - Vietsub`... và `Máy chủ` dạng `O Server 1`, `K Server 2` khi cùng nguồn có nhiều server.
-- Luồng đổi lại server đã được sửa để luôn resolve lại nguồn phát khi người dùng chọn tay, kể cả sau khi auto fallback vừa chuyển sang server khác.
+- `Film` hiện chỉ hiển thị danh sách `Phiên bản` theo dữ liệu aggregate thật với mã nguồn ngắn gọn như `O · Vietsub`, `K · Thuyết minh`, `VS · Lồng tiếng`.
+- `Film` không còn hiển thị `Máy chủ`; server chỉ là dữ liệu nội bộ để hệ thống tự chấm điểm, tự chọn và tự fallback.
+- Luồng phát hiện ưu tiên tự chọn phiên bản phát tốt nhất khi mở phim, tự chọn server nhanh nhất trong phiên bản đó, rồi fallback theo thứ tự `cùng phiên bản -> phiên bản tương đương ở provider khác`.
 - Local playback preference hiện lưu thêm `preferredVersionLabel` và `preferredVersionKey` bên cạnh `preferredServerIndex` và `preferredPlaybackMode`.
+- Đã giữ đúng phân biệt `Vietsub`, `Thuyết minh`, `Lồng tiếng`; không còn gộp nhầm `Lồng tiếng` vào `Thuyết minh`.
 - Chưa bật proxy runtime từ UI.

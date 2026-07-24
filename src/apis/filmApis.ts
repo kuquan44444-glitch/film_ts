@@ -375,12 +375,11 @@ const inferVersionLabel = (serverName: string, fallbackLang: string) => {
   const normalizedLang = normalizeText(cleanServerName(fallbackLang))
   const inferredLabel = [normalizedServerName, normalizedLang]
     .map((value) => {
-      if (
-        value.includes('thuyet minh') ||
-        value.includes('long tieng') ||
-        value.includes('dub') ||
-        value.includes('voice')
-      ) {
+      if (value.includes('long tieng') || value.includes('dub') || value.includes('voice')) {
+        return 'Lồng tiếng'
+      }
+
+      if (value.includes('thuyet minh') || value.includes('thuyetminh') || value.includes('thuyet-minh')) {
         return 'Thuyết minh'
       }
 

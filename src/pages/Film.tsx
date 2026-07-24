@@ -42,12 +42,10 @@ const DEFAULT_PLAYER_MESSAGE = 'Đang chuẩn bị phát phim.'
 const PLAYER_READY_MESSAGE = 'Đang phát phim.'
 const PLAYER_LOADING_MESSAGE = 'Đang tải phim...'
 const PLAYER_PROBING_MESSAGE = 'Đang kiểm tra chất lượng nguồn...'
-const PLAYER_SWITCHING_MESSAGE = 'Đang chuyển server...'
 const DEFAULT_VERSION_LABEL = 'Mặc định'
 
 type ServerEntry = PlaybackServerEntry &
   episodeServer & {
-    displayName: string
     sourceCode: string
     versionKey: string
     versionDisplayName: string
@@ -115,10 +113,10 @@ const loadHlsConstructor = async () => {
 const Film = () => {
   const queryConfig = useQueryConfig()
   const [preferredServerId, setPreferredServerId] = useState<string>('')
-  const [lockedServerId, setLockedServerId] = useState<string>('')
   const [activeServerId, setActiveServerId] = useState<string>('')
   const [episodeSlug, setEpisodeSlug] = useState<string>('')
   const [selectedVersionKey, setSelectedVersionKey] = useState<string>('')
+  const [manualVersionKey, setManualVersionKey] = useState<string>('')
   const [playerMessage, setPlayerMessage] = useState<string>('')
   const [isPlayerLoading, setIsPlayerLoading] = useState<boolean>(false)
   const [activeCandidate, setActiveCandidate] = useState<PlaybackCandidate | null>(null)
@@ -140,7 +138,7 @@ const Film = () => {
   const dataFilm = data?.data.data
   const servers = useMemo(() => dataFilm?.item.episodes ?? [], [dataFilm])
   const serverEntries = useMemo<ServerEntry[]>(() => {
-    const baseEntries = servers.map((server, index) => {
+    return servers.map((server, index) => {
       const sourceCode = getSourceCode(server)
       const versionName = getVersionName(server)
 
@@ -150,21 +148,9 @@ const Film = () => {
         serverId: createServerId(server, index),
         sourceCode,
         versionKey: createVersionKey(server, sourceCode, versionName),
-        versionDisplayName: `${sourceCode} - ${versionName}`,
+        versionDisplayName: `${sourceCode} · ${versionName}`,
         versionName,
-        displayName: '',
         index
-      }
-    })
-    const serverOrderMap = new Map<string, number>()
-
-    return baseEntries.map((server) => {
-      const nextOrder = (serverOrderMap.get(server.versionKey) ?? 0) + 1
-      serverOrderMap.set(server.versionKey, nextOrder)
-
-      return {
-        ...server,
-        displayName: `${server.sourceCode} Server ${nextOrder}`
       }
     })
   }, [servers])
@@ -184,22 +170,7 @@ const Film = () => {
       ).map(([, value]) => value),
     [serverEntries]
   )
-  const activeVersionOption = useMemo(
-    () => versionOptions.find((option) => option.id === selectedVersionKey) ?? versionOptions[0],
-    [selectedVersionKey, versionOptions]
-  )
-  const versionFilteredServers = useMemo(
-    () =>
-      activeVersionOption
-        ? serverEntries.filter((server) => server.versionKey === activeVersionOption.id)
-        : serverEntries,
-    [activeVersionOption, serverEntries]
-  )
-  const visibleServers = versionFilteredServers
   const activeServer =
-    visibleServers.find((server) => server.serverId === activeServerId) ??
-    visibleServers.find((server) => server.serverId === preferredServerId) ??
-    visibleServers[0] ??
     serverEntries.find((server) => server.serverId === activeServerId) ??
     serverEntries.find((server) => server.serverId === preferredServerId) ??
     serverEntries[0]
@@ -234,14 +205,20 @@ const Film = () => {
 
     const preferredServer = serverEntries.find((server) => server.serverId === preferredServerId) ?? serverEntries[0]
     const preferredEpisode = findEpisodeForServer(preferredServer, episodeSlug)
+    const requestedVersion = versionOptions.find((option) => option.id === manualVersionKey)
     const candidates = await buildPlaybackCandidates({
-      serverEntries: visibleServers,
+      serverEntries,
       preferredEpisode,
       preferredServerId
     })
     const selection = selectPlaybackCandidate(candidates, {
-      lockedServerId,
-      preferredServerIds: visibleServers.map((server) => server.serverId)
+      preferredServerIds: requestedVersion
+        ? serverEntries.filter((server) => server.versionKey === requestedVersion.id).map((server) => server.serverId)
+        : selectedVersionKey
+        ? serverEntries.filter((server) => server.versionKey === selectedVersionKey).map((server) => server.serverId)
+        : undefined,
+      preferredVersionKey: requestedVersion?.id,
+      preferredVersionLabel: requestedVersion?.versionLabel
     })
 
     if (resolutionSequenceRef.current !== nextSequence) return
@@ -252,8 +229,8 @@ const Film = () => {
       setActiveServerId('')
       setIsPlayerLoading(false)
       setPlayerMessage(
-        activeVersionOption
-          ? `Hiện chưa tìm thấy nguồn phát trực tiếp hợp lệ cho lựa chọn ${activeVersionOption.label}.`
+        requestedVersion
+          ? `Hiện chưa tìm thấy nguồn phát trực tiếp hợp lệ cho phiên bản ${requestedVersion.label}.`
           : 'Hiện chưa tìm thấy nguồn phát trực tiếp hợp lệ cho tập này.'
       )
       return
@@ -265,6 +242,10 @@ const Film = () => {
     setFallbackQueue(selection.fallbackQueue)
     setActiveServerId(selection.selected.serverId)
     setPreferredServerId(selection.selected.serverId)
+    setSelectedVersionKey(nextServer?.versionKey || selection.selected.versionKey)
+    if (manualVersionKey) {
+      setManualVersionKey(nextServer?.versionKey || selection.selected.versionKey)
+    }
     if (episodeSlug !== selection.selected.episodeSlug) {
       setEpisodeSlug(selection.selected.episodeSlug)
     }
@@ -272,19 +253,19 @@ const Film = () => {
       preferredServerIndex: nextServerIndex >= 0 ? nextServerIndex : 0,
       preferredPlaybackMode: 'm3u8',
       preferredVersionLabel: nextServer?.versionName || selection.selected.versionLabel,
-      preferredVersionKey: nextServer?.versionKey || activeVersionOption?.id || ''
+      preferredVersionKey: nextServer?.versionKey || selection.selected.versionKey
     })
     bumpPlayerReloadToken()
   }, [
-    activeVersionOption,
     bumpPlayerReloadToken,
     clearFallbackTimer,
     destroyHls,
     episodeSlug,
-    lockedServerId,
+    manualVersionKey,
     preferredServerId,
+    selectedVersionKey,
     serverEntries,
-    visibleServers
+    versionOptions
   ])
 
   const handlePlaybackFailure = useCallback(
@@ -315,12 +296,13 @@ const Film = () => {
       setFallbackQueue(remainingCandidates)
       setActiveServerId(nextCandidate.serverId)
       setPreferredServerId(nextCandidate.serverId)
-      if (lockedServerId && nextCandidate.serverId !== lockedServerId) {
-        setLockedServerId('')
+      setSelectedVersionKey(nextServer?.versionKey || nextCandidate.versionKey)
+      if (manualVersionKey) {
+        setManualVersionKey(nextServer?.versionKey || nextCandidate.versionKey)
       }
       setEpisodeSlug(nextCandidate.episodeSlug)
       setIsPlayerLoading(true)
-      setPlayerMessage(`${reason}. Đang chuyển sang ${nextServer?.displayName.toLowerCase() || 'server dự phòng'}.`)
+      setPlayerMessage(`${reason}. Đang chuyển sang phiên bản ${nextServer?.versionDisplayName || 'dự phòng'}.`)
       bumpPlayerReloadToken()
     },
     [
@@ -329,7 +311,7 @@ const Film = () => {
       clearFallbackTimer,
       destroyHls,
       fallbackQueue,
-      lockedServerId,
+      manualVersionKey,
       serverEntries
     ]
   )
@@ -338,10 +320,10 @@ const Film = () => {
     clearFallbackTimer()
     destroyHls()
     setPreferredServerId('')
-    setLockedServerId('')
     setActiveServerId('')
     setEpisodeSlug('')
     setSelectedVersionKey('')
+    setManualVersionKey('')
     setPlayerMessage('')
     setIsPlayerLoading(false)
     setActiveCandidate(null)
@@ -353,28 +335,15 @@ const Film = () => {
   useEffect(() => {
     if (!serverEntries.length) return
 
-    const { preferredServerIndex, preferredVersionKey, preferredVersionLabel } = getPlaybackPreferenceStorage()
+    const { preferredServerIndex } = getPlaybackPreferenceStorage()
     const preferredServer = serverEntries[preferredServerIndex] ?? serverEntries[0]
     const initialEpisode = findEpisodeForServer(preferredServer, episodeSlug)
-
-    if (!preferredServerId) {
-      setPreferredServerId(preferredServer.serverId)
-    }
-
-    if (!selectedVersionKey) {
-      const storedVersion =
-        versionOptions.find((option) => option.id === preferredVersionKey) ??
-        versionOptions.find((option) => option.versionLabel === preferredVersionLabel) ??
-        versionOptions.find((option) => option.id === preferredServer.versionKey) ??
-        versionOptions[0]
-      setSelectedVersionKey(storedVersion?.id || '')
-    }
 
     if (!episodeSlug && initialEpisode) {
       setEpisodeSlug(initialEpisode.slug)
       setPlayerMessage(DEFAULT_PLAYER_MESSAGE)
     }
-  }, [episodeSlug, preferredServerId, selectedVersionKey, serverEntries, versionOptions])
+  }, [episodeSlug, serverEntries])
 
   useEffect(() => {
     if (!serverEntries.length || !episodeSlug) return
@@ -529,25 +498,25 @@ const Film = () => {
           <div className='container mt-6 px-4'>
             <p className='mb-2 text-center text-sm font-medium uppercase tracking-wide text-white/70'>Phiên bản</p>
             <div className='flex flex-wrap items-center justify-center gap-2'>
-              {versionOptions.map((versionLabel) => {
-                const isActive = versionLabel.id === selectedVersionKey
-                const nextServer = serverEntries.find((server) => server.versionKey === versionLabel.id)
+              {versionOptions.map((versionOption) => {
+                const isActive = versionOption.id === selectedVersionKey
+                const nextServer = serverEntries.find((server) => server.versionKey === versionOption.id)
                 return (
                   <button
-                    key={versionLabel.id}
-                    title={versionLabel.label}
+                    key={versionOption.id}
+                    title={versionOption.label}
                     onClick={() => {
                       resolutionMessageRef.current = 'Đang chuyển phiên bản...'
-                      setLockedServerId('')
                       setPreferredServerId(nextServer?.serverId || '')
-                      setSelectedVersionKey(versionLabel.id)
+                      setSelectedVersionKey(versionOption.id)
+                      setManualVersionKey(versionOption.id)
                       setSelectionRequestToken((currentValue) => currentValue + 1)
                       setIsPlayerLoading(true)
                       setPlayerMessage('Đang chuyển phiên bản...')
                       setPlaybackPreferenceStorage({
                         preferredServerIndex: nextServer?.index ?? 0,
-                        preferredVersionLabel: versionLabel.versionLabel,
-                        preferredVersionKey: versionLabel.id
+                        preferredVersionLabel: versionOption.versionLabel,
+                        preferredVersionKey: versionOption.id
                       })
                     }}
                     className={classNames('rounded px-3 py-2 font-medium', {
@@ -568,7 +537,7 @@ const Film = () => {
                           <path strokeLinecap='round' strokeLinejoin='round' d='M4.5 12.75l6 6 9-13.5' />
                         </svg>
                       )}
-                      {versionLabel.label}
+                      {versionOption.label}
                     </span>
                   </button>
                 )
@@ -576,65 +545,12 @@ const Film = () => {
             </div>
           </div>
         )}
-        {visibleServers.length > 0 ? (
-          <div className='mt-6'>
-            <p className='mb-2 text-center text-sm font-medium uppercase tracking-wide text-white/70'>Máy chủ</p>
-            <div className='flex items-center justify-center gap-2'>
-              {visibleServers.map((item) => {
-                const isActive = item.serverId === activeServer?.serverId
-                return (
-                  <button
-                    title={item.displayName}
-                    onClick={() => {
-                      resolutionMessageRef.current = PLAYER_SWITCHING_MESSAGE
-                      setLockedServerId(item.serverId)
-                      setPreferredServerId(item.serverId)
-                      setSelectedVersionKey(item.versionKey)
-                      setSelectionRequestToken((currentValue) => currentValue + 1)
-                      setEpisodeSlug((currentEpisodeSlug) => {
-                        const nextEpisode = findEpisodeForServer(item, currentEpisodeSlug)
-                        return nextEpisode?.slug || item.server_data[0]?.slug || ''
-                      })
-                      setIsPlayerLoading(true)
-                      setPlayerMessage(PLAYER_SWITCHING_MESSAGE)
-                      setPlaybackPreferenceStorage({
-                        preferredServerIndex: item.index,
-                        preferredVersionLabel: item.versionName,
-                        preferredVersionKey: item.versionKey
-                      })
-                    }}
-                    key={item.serverId}
-                    className={classNames('rounded px-3 py-2 font-medium', {
-                      'bg-white/40 text-white': isActive,
-                      'bg-white text-black': !isActive
-                    })}
-                  >
-                    <span className='flex items-center justify-center gap-1'>
-                      {isActive && (
-                        <svg
-                          xmlns='http://www.w3.org/2000/svg'
-                          fill='none'
-                          viewBox='0 0 24 24'
-                          strokeWidth={3}
-                          stroke='currentColor'
-                          className='w-4 h-4 stroke-green-500 -ml-1'
-                        >
-                          <path strokeLinecap='round' strokeLinejoin='round' d='M4.5 12.75l6 6 9-13.5' />
-                        </svg>
-                      )}
-                      {item.displayName}
-                    </span>
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        ) : (
+        {versionOptions.length === 0 ? (
           <div className='container mt-6 px-4 text-center text-sm text-white/60'>Hiện chưa lấy được lựa chọn phát.</div>
-        )}
+        ) : null}
         <div className='container px-4 mt-2'>
           <p className='text-sm text-white/60'>
-            Nếu phim bị lag, đứng hoặc lỗi, trình phát sẽ tự chuyển server trước khi bạn phải đổi tay.
+            Nếu phim bị lag, đứng hoặc lỗi, trình phát sẽ tự thử nguồn phát dự phòng trước khi bạn phải đổi tay.
           </p>
         </div>
         <div className='container px-4 mt-6'>
@@ -688,8 +604,8 @@ const Film = () => {
                 title={`Tập ${item.name}`}
                 onClick={() => {
                   resolutionMessageRef.current = `Đang chuyển sang tập ${item.name}...`
-                  setLockedServerId(activeServer?.serverId || '')
                   setSelectionRequestToken((currentValue) => currentValue + 1)
+                  setPreferredServerId(activeServer?.serverId || '')
                   setEpisodeSlug(item.slug)
                   setIsPlayerLoading(true)
                   setPlayerMessage(`Đang chuyển sang tập ${item.name}...`)
