@@ -11,11 +11,7 @@ import {
   option,
   taxonomyItem
 } from 'src/types'
-import providerAdapters, {
-  optionProviderOrder,
-  providerMap,
-  providerOrder
-} from './filmSourceAdapters'
+import providerAdapters, { optionProviderOrder, providerMap, providerOrder } from './filmSourceAdapters'
 import type { ProviderAdapter, ProviderSearchParams } from './filmSourceAdapters'
 import PATH from '../utils/path'
 
@@ -748,7 +744,9 @@ const filmApis = {
     return firstSuccessful({
       sourceOrder: optionProviderOrder,
       executor: async (provider) => {
-        const response = await clients[provider.key].get<Record<string, unknown>>(provider.buildOptionEndpoint('genres'))
+        const response = await clients[provider.key].get<Record<string, unknown>>(
+          provider.buildOptionEndpoint('genres')
+        )
         return wrapData(normalizeOptionResponse(response.data, provider), `Đã tải thể loại từ ${provider.label}`)
       }
     })
@@ -757,7 +755,9 @@ const filmApis = {
     return firstSuccessful({
       sourceOrder: optionProviderOrder,
       executor: async (provider) => {
-        const response = await clients[provider.key].get<Record<string, unknown>>(provider.buildOptionEndpoint('country'))
+        const response = await clients[provider.key].get<Record<string, unknown>>(
+          provider.buildOptionEndpoint('country')
+        )
         return wrapData(normalizeOptionResponse(response.data, provider), `Đã tải quốc gia từ ${provider.label}`)
       }
     })
@@ -766,9 +766,12 @@ const filmApis = {
     return firstSuccessful({
       sourceOrder: providerOrder,
       executor: async (provider) => {
-        const response = await clients[provider.key].get<Record<string, unknown>>(provider.buildListEndpoint(type, params), {
-          params: provider.buildRequestParams(params)
-        })
+        const response = await clients[provider.key].get<Record<string, unknown>>(
+          provider.buildListEndpoint(type, params),
+          {
+            params: provider.buildRequestParams(params)
+          }
+        )
         return wrapData(
           normalizeListResponse({
             payload: response.data,

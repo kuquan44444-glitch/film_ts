@@ -23,11 +23,19 @@ Không có file code ứng dụng nào bị sửa trong bước này.
   - Rủi ro, chiến lược rollout và kiểm thử
   - Hướng dẫn cài đặt/chạy và định hướng cấu hình Proxy
 
-## Phạm vi bước hiện tại
+## Tình trạng hiện tại
 
-- Đã đọc và phân tích codebase hiện có.
-- Đã khảo sát các provider được yêu cầu.
-- Đã đề xuất kiến trúc mục tiêu và migration plan.
-- Chưa sửa code ứng dụng.
-- Chưa triển khai proxy runtime.
-- Chưa refactor player hoặc provider adapter.
+- Đã hoàn thành giai đoạn phân tích và lập kế hoạch.
+- Đã hoàn thành `Phase 1: Nền Tảng Kiến Trúc`.
+- Đã tạo cây thư mục mới cho:
+  - `src/providers`
+  - `src/domain`
+  - `src/services`
+  - `src/storage`
+  - `src/apis/movieGateway.ts`
+- Đã tách provider adapter khỏi `src/apis/filmSourceAdapters.ts` sang registry/adapters mới.
+- Đã giữ `filmApis` làm facade tương thích để UI hiện tại tiếp tục hoạt động.
+- Đã thêm service skeleton cho aggregation, recommendation, media selection, playback health và proxy URL.
+- Chưa triển khai `Phase 2` trở đi.
+- Chưa thay player hiện tại sang unified player không `iframe`.
+- Chưa bật proxy runtime từ UI.
