@@ -6,14 +6,42 @@ import Pagination from 'src/components/Pagination'
 import { useNavigate, createSearchParams } from 'react-router-dom'
 import PATH from 'src/utils/path'
 import { Helmet } from 'react-helmet-async'
+import { useEffect, useState } from 'react'
 
 const Search = () => {
   const navigate = useNavigate()
   const queryConfig = useQueryConfig()
+  const [keywordInput, setKeywordInput] = useState(queryConfig.keyword || '')
+
+  useEffect(() => {
+    setKeywordInput(queryConfig.keyword || '')
+  }, [queryConfig.keyword])
+
+  useEffect(() => {
+    const trimmedKeyword = keywordInput.trim()
+    const currentKeyword = queryConfig.keyword || ''
+
+    if (trimmedKeyword === currentKeyword) return
+
+    const timer = window.setTimeout(() => {
+      navigate({
+        pathname: PATH.search,
+        search: createSearchParams({
+          keyword: trimmedKeyword,
+          page: '1'
+        }).toString()
+      })
+    }, 400)
+
+    return () => window.clearTimeout(timer)
+  }, [keywordInput, navigate, queryConfig.keyword])
+
   const { data } = useQuery({
     queryKey: ['tim-kiem', { keyword: queryConfig.keyword, page: queryConfig.page }],
     queryFn: () => filmApis.getSearchFilm({ keyword: queryConfig.keyword, page: queryConfig.page }),
-    staleTime: 3 * 60 * 1000
+    staleTime: 5 * 60 * 1000,
+    keepPreviousData: true,
+    enabled: Boolean(queryConfig.keyword?.trim())
   })
   const dataSearch = data?.data.data
 
@@ -27,17 +55,9 @@ const Search = () => {
       </Helmet>
       <div className='container px-4 mt-14'>
         <input
-          onChange={(e) =>
-            navigate({
-              pathname: PATH.search,
-              search: createSearchParams({
-                keyword: e.target.value.trim(),
-                page: '1'
-              }).toString()
-            })
-          }
+          onChange={(e) => setKeywordInput(e.target.value)}
           type='text'
-          defaultValue=''
+          value={keywordInput}
           // eslint-disable-next-line jsx-a11y/no-autofocus
           autoFocus
           placeholder='Nhập tên phim...'
@@ -68,7 +88,12 @@ const Search = () => {
             Không tìm thấy phim với kết quả tìm kiếm.
           </p>
         )}
-        {!dataSearch && (
+        {!queryConfig.keyword?.trim() && (
+          <p className='w-full h-[50vh] text-center text-xl text-white flex justify-center items-center'>
+            Nhập tên phim để bắt đầu tìm kiếm.
+          </p>
+        )}
+        {!dataSearch && queryConfig.keyword?.trim() && (
           <div className='mt-4'>
             <div className='grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-x-4 gap-y-[22px] py-3'>
               {Array(10)
