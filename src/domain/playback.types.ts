@@ -3,6 +3,8 @@ import type { ProviderKey } from 'src/providers/base/provider.types'
 export type PlaybackCandidate = {
   serverId: string
   episodeKey: string
+  episodeSlug: string
+  episodeName: string
   playbackUrl: string
   format: 'm3u8' | 'mp4'
   qualityLabel?: string
