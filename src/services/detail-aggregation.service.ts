@@ -58,6 +58,38 @@ const mergeEpisodeEntries = (episodes: episodeData[]) =>
     }, new Map())
   ).map(([, value]) => value)
 
+const createServerMergeKey = (server: episodeServer) =>
+  [
+    server.source,
+    slugifyEpisode(server.source_code || server.source),
+    slugifyEpisode(server.version_label || 'mac-dinh'),
+    slugifyEpisode(server.original_server_name || server.server_name || 'server')
+  ].join(':')
+
+const mergeEpisodeServers = (servers: episodeServer[]) =>
+  Array.from(
+    servers.reduce<Map<string, episodeServer>>((result, server) => {
+      const mergeKey = createServerMergeKey(server)
+      const currentEntry = result.get(mergeKey)
+
+      if (!currentEntry) {
+        result.set(mergeKey, server)
+        return result
+      }
+
+      result.set(mergeKey, {
+        ...currentEntry,
+        server_name: currentEntry.server_name || server.server_name,
+        original_server_name: currentEntry.original_server_name || server.original_server_name,
+        source_code: currentEntry.source_code || server.source_code,
+        version_label: currentEntry.version_label || server.version_label,
+        priority: Math.min(currentEntry.priority, server.priority),
+        server_data: mergeEpisodeEntries([...currentEntry.server_data, ...server.server_data])
+      })
+      return result
+    }, new Map())
+  ).map(([, value]) => value)
+
 const extractEpisodeOrder = (episode: episodeData, fallbackIndex: number) => {
   const numericValue = Number(episode.name)
   if (Number.isFinite(numericValue) && numericValue > 0) {
@@ -126,28 +158,25 @@ const mergeLegacyFilms = (films: film[]) => {
     thumb: uniqueStrings(sortedFilms.flatMap((entry) => entry.item.image_urls.thumb)),
     poster: uniqueStrings(sortedFilms.flatMap((entry) => entry.item.image_urls.poster))
   }
-  const mergedEpisodes = sortedFilms
-    .flatMap((entry) => {
+  const mergedEpisodes = mergeEpisodeServers(
+    sortedFilms.flatMap((entry) => {
       const provider = providerMap[entry.item.source]
-      const mergedServerData = mergeEpisodeEntries(entry.item.episodes.flatMap((server) => server.server_data))
 
-      if (!mergedServerData.length) return []
-
-      return [
-        {
-          server_name: provider.sourceButtonLabel,
-          original_server_name:
-            uniqueStrings(entry.item.episodes.map((server) => server.original_server_name)).join(' / ') ||
-            provider.label,
+      return entry.item.episodes
+        .map((server) => ({
+          ...server,
+          server_name: server.server_name || server.original_server_name || provider.sourceButtonLabel,
+          original_server_name: server.original_server_name || server.server_name || provider.label,
           source: entry.item.source,
           source_label: entry.item.source_label,
-          version_label: entry.item.episodes[0]?.version_label || entry.item.lang || 'Vietsub',
+          source_code: server.source_code || provider.shortLabel,
+          version_label: server.version_label || entry.item.lang || 'Mặc định',
           priority: provider.priority,
-          server_data: mergedServerData
-        }
-      ]
+          server_data: mergeEpisodeEntries(server.server_data)
+        }))
+        .filter((server) => server.server_data.length > 0)
     })
-    .sort((left, right) => left.priority - right.priority)
+  )
   const mergedCategories = uniqueTaxonomy(sortedFilms.flatMap((entry) => entry.item.category))
   const mergedCountries = uniqueTaxonomy(sortedFilms.flatMap((entry) => entry.item.country))
   const mergedSourceSlugs = sortedFilms.reduce<Partial<Record<movieSource, string>>>((result, entry) => {

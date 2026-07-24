@@ -13,6 +13,7 @@ import type {
 export type LegacyProviderAdapter = {
   key: ProviderKey
   label: string
+  shortLabel: string
   sourceButtonLabel: string
   priority: number
   playbackPreference: PlaybackMode[]

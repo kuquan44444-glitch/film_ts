@@ -16,7 +16,7 @@ Lưu ý:
 - Tốc độ phản hồi là mẫu đo tại thời điểm khảo sát, không phải SLA.
 - Tiêu chí đánh giá ưu tiên theo mục tiêu mới của dự án:
   - giao diện thống nhất
-  - không lộ provider
+  - không lộ tên provider đầy đủ; player chỉ dùng mã nguồn ngắn khi cần phân biệt lựa chọn
   - không dùng iframe
   - ưu tiên `m3u8` hoặc `mp4`
   - có thể fallback tự động

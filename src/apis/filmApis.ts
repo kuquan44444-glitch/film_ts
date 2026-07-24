@@ -371,28 +371,36 @@ const normalizeEpisodeData = (input: Record<string, unknown>): episodeData => ({
 })
 
 const inferVersionLabel = (serverName: string, fallbackLang: string) => {
-  const normalizedServerName = cleanServerName(serverName).toLowerCase()
-  const normalizedLang = fallbackLang.trim().toLowerCase()
+  const normalizedServerName = normalizeText(cleanServerName(serverName))
+  const normalizedLang = normalizeText(cleanServerName(fallbackLang))
+  const inferredLabel = [normalizedServerName, normalizedLang]
+    .map((value) => {
+      if (
+        value.includes('thuyet minh') ||
+        value.includes('long tieng') ||
+        value.includes('dub') ||
+        value.includes('voice')
+      ) {
+        return 'Thuyết minh'
+      }
 
-  if (
-    normalizedServerName.includes('thuyet minh') ||
-    normalizedServerName.includes('thuyết minh') ||
-    normalizedLang.includes('thuyet minh') ||
-    normalizedLang.includes('thuyết minh')
-  ) {
-    return 'Thuyết minh'
-  }
+      if (
+        value.includes('vietsub') ||
+        value.includes('viet sub') ||
+        value.includes('phu de') ||
+        value.includes('subtitle') ||
+        value.includes('sub')
+      ) {
+        return 'Vietsub'
+      }
 
-  if (
-    normalizedServerName.includes('vietsub') ||
-    normalizedServerName.includes('viet sub') ||
-    normalizedLang.includes('vietsub') ||
-    normalizedLang.includes('viet sub')
-  ) {
-    return 'Vietsub'
-  }
+      return ''
+    })
+    .find(Boolean)
 
-  return 'Vietsub'
+  if (inferredLabel) return inferredLabel
+
+  return cleanServerName(fallbackLang) || 'Mặc định'
 }
 
 const normalizeFilmResponse = ({
@@ -426,6 +434,7 @@ const normalizeFilmResponse = ({
         original_server_name: originalServerName,
         source: provider.key,
         source_label: provider.label,
+        source_code: provider.shortLabel,
         version_label: inferVersionLabel(originalServerName, baseItem.lang),
         priority: provider.priority,
         server_data: serverData

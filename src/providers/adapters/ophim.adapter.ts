@@ -16,6 +16,7 @@ import {
 const ophimAdapter: LegacyProviderAdapter = createProviderAdapter({
   key: 'ophim',
   label: 'OPhim',
+  shortLabel: 'O',
   sourceButtonLabel: 'OPhim (legacy)',
   priority: 4,
   playbackPreference: ['m3u8', 'embed'],

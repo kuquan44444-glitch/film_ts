@@ -82,7 +82,7 @@ Biến hệ thống hiện tại từ frontend gọi API nhiều nguồn theo ki
 - Tất cả page chỉ đọc từ unified domain model.
 - Metadata pipeline và media pipeline tách riêng.
 - Mọi quyết định chọn stream đều dựa trên runtime scoring.
-- UI không hiển thị tên provider; chỉ hiển thị `Server 1`, `Server 2`, `Server 3`.
+- UI không hiển thị tên provider đầy đủ; player chỉ hiển thị tiền tố nguồn ngắn gọn như `O`, `K`, `VS`, `N` khi cần phân biệt lựa chọn thực tế.
 
 ## Kiến Trúc Thư Mục Mục Tiêu
 
@@ -338,7 +338,7 @@ export interface ProviderAdapter {
 - Chỉ một player duy nhất.
 - Không dùng iframe.
 - Chỉ phát `m3u8` hoặc `mp4`.
-- Không lộ provider.
+- Không hiển thị tên provider đầy đủ; nếu cần phân biệt nguồn ở player thì chỉ dùng tiền tố ngắn gọn đã chuẩn hóa.
 
 ### Đề xuất
 
@@ -356,10 +356,14 @@ Khuyến nghị:
 - Thanh trạng thái:
   - `Đang kiểm tra chất lượng nguồn...`
   - `Đang chuyển server...`
+- Danh sách phiên bản:
+  - `O - Vietsub`
+  - `K - Thuyết minh`
+  - `VS - Vietsub`
 - Danh sách server:
-  - `Server 1`
-  - `Server 2`
-  - `Server 3`
+  - `O Server 1`
+  - `O Server 2`
+  - `K Server 1`
 - Nút `Proxy OFF / ON`
 
 ### Local storage
@@ -428,7 +432,7 @@ healthScore =
 ### UX
 
 - Không hiện provider name.
-- Chỉ báo: `Server hiện tại lỗi, đang chuyển sang Server 2`.
+- Chỉ báo: `Server hiện tại lỗi, đang chuyển sang O Server 2`.
 
 ## Proxy Design
 
