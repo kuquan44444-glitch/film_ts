@@ -2,6 +2,13 @@ import type { PlaybackHealthSnapshot } from 'src/domain/playback.types'
 
 const healthStore = new Map<string, PlaybackHealthSnapshot>()
 
+export const createPlaybackCandidateKey = (input: {
+  providerKey: string
+  serverId: string
+  episodeKey: string
+  playbackUrl: string
+}) => `${input.providerKey}:${input.serverId}:${input.episodeKey}:${input.playbackUrl}`
+
 export const getPlaybackHealth = (candidateKey: string): PlaybackHealthSnapshot => {
   const existingValue = healthStore.get(candidateKey)
 
