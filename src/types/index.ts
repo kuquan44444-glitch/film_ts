@@ -172,4 +172,5 @@ export type film = {
     source_slugs?: Partial<Record<movieSource, string>>
     episodes: episodeServer[]
   }
+  recommendations?: items[]
 }

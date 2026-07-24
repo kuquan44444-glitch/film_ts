@@ -2,7 +2,7 @@ import DOMPurify from 'dompurify'
 import { useQuery } from 'react-query'
 import { Link, createSearchParams, useParams } from 'react-router-dom'
 import filmApis from 'src/apis/filmApis'
-import { SmartImage } from 'src/components'
+import { Card, SmartImage } from 'src/components'
 import { useQueryConfig } from 'src/hooks'
 import PATH from 'src/utils/path'
 import { Fragment, useState } from 'react'
@@ -217,6 +217,16 @@ const Detail = () => {
                 __html: DOMPurify.sanitize(dataFilm.item.content)
               }}
             />
+            {dataFilm.recommendations && dataFilm.recommendations.length > 0 && (
+              <>
+                <h3 className='text-white uppercase font-semibold mt-10 mb-4'>Đề xuất cho bạn</h3>
+                <div className='grid grid-cols-2 gap-x-4 gap-y-[22px] md:grid-cols-3 xl:grid-cols-5'>
+                  {dataFilm.recommendations.map((item) => (
+                    <Card key={`${item._id}-${item.slug}`} data={item} />
+                  ))}
+                </div>
+              </>
+            )}
             <h3 className='text-white uppercase font-semibold mt-7 mb-4'>Trailer</h3>
             <div className='flex items-center justify-start'>
               {dataFilm.item.trailer_url !== '' ? (
