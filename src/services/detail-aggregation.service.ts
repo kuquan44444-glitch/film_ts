@@ -141,6 +141,7 @@ const mergeLegacyFilms = (films: film[]) => {
             provider.label,
           source: entry.item.source,
           source_label: entry.item.source_label,
+          version_label: entry.item.episodes[0]?.version_label || entry.item.lang || 'Vietsub',
           priority: provider.priority,
           server_data: mergedServerData
         }

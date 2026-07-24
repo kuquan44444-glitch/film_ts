@@ -370,6 +370,31 @@ const normalizeEpisodeData = (input: Record<string, unknown>): episodeData => ({
   link_m3u8: toStringValue(input.link_m3u8 ?? input.m3u8)
 })
 
+const inferVersionLabel = (serverName: string, fallbackLang: string) => {
+  const normalizedServerName = cleanServerName(serverName).toLowerCase()
+  const normalizedLang = fallbackLang.trim().toLowerCase()
+
+  if (
+    normalizedServerName.includes('thuyet minh') ||
+    normalizedServerName.includes('thuyết minh') ||
+    normalizedLang.includes('thuyet minh') ||
+    normalizedLang.includes('thuyết minh')
+  ) {
+    return 'Thuyết minh'
+  }
+
+  if (
+    normalizedServerName.includes('vietsub') ||
+    normalizedServerName.includes('viet sub') ||
+    normalizedLang.includes('vietsub') ||
+    normalizedLang.includes('viet sub')
+  ) {
+    return 'Vietsub'
+  }
+
+  return 'Vietsub'
+}
+
 const normalizeFilmResponse = ({
   payload,
   provider
@@ -401,6 +426,7 @@ const normalizeFilmResponse = ({
         original_server_name: originalServerName,
         source: provider.key,
         source_label: provider.label,
+        version_label: inferVersionLabel(originalServerName, baseItem.lang),
         priority: provider.priority,
         server_data: serverData
       }

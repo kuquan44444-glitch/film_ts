@@ -101,6 +101,7 @@ export type episodeServer = {
   original_server_name: string
   source: movieSource
   source_label: string
+  version_label: string
   priority: number
   server_data: episodeData[]
 }

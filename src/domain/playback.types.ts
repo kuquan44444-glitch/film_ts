@@ -5,6 +5,7 @@ export type PlaybackCandidate = {
   episodeKey: string
   episodeSlug: string
   episodeName: string
+  versionLabel: string
   playbackUrl: string
   format: 'm3u8' | 'mp4'
   qualityLabel?: string

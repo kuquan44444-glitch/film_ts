@@ -4,16 +4,24 @@ import type { episodeData, episodeServer } from 'src/types'
 import { resolveProxyUrl } from './proxy-url.service'
 import { createPlaybackCandidateKey, getPlaybackHealth } from './playback-health.service'
 
+export type PlaybackServerEntry = {
+  server: episodeServer
+  serverId: string
+  index: number
+}
+
 type BuildPlaybackCandidatesInput = {
-  servers: episodeServer[]
+  serverEntries: PlaybackServerEntry[]
   preferredEpisode?: episodeData
   preferredServerId?: string
   proxyMode?: boolean
 }
 
-const PROBE_TIMEOUT_MS = 4500
+type SelectPlaybackCandidateOptions = {
+  lockedServerId?: string
+}
 
-const createServerId = (server: episodeServer, index: number) => `${server.source}:${index}:${server.server_name}`
+const PROBE_TIMEOUT_MS = 4500
 
 const getEpisodeMergeKey = (episode: episodeData) =>
   episode.slug || episode.filename || episode.name.trim().toLowerCase().replace(/\s+/g, '-')
@@ -127,15 +135,14 @@ const rankCandidate = async (candidate: PlaybackCandidate, preferredServerId?: s
 }
 
 export const buildPlaybackCandidates = async ({
-  servers,
+  serverEntries,
   preferredEpisode,
   preferredServerId,
   proxyMode = false
 }: BuildPlaybackCandidatesInput): Promise<PlaybackCandidate[]> => {
   const resolvedCandidates = await Promise.all(
-    servers.map(async (server, serverIndex) => {
+    serverEntries.map(async ({ server, serverId }) => {
       const provider = providerMap[server.source]
-      const serverId = createServerId(server, serverIndex)
       const matchedEpisode = getEpisodeForServer(server, preferredEpisode)
 
       if (!provider?.resolveMedia || !matchedEpisode) return []
@@ -152,6 +159,7 @@ export const buildPlaybackCandidates = async ({
           episodeKey: getEpisodeMergeKey(matchedEpisode),
           episodeSlug: matchedEpisode.slug,
           episodeName: matchedEpisode.name,
+          versionLabel: server.version_label || 'Vietsub',
           playbackUrl: resolveProxyUrl({
             target: 'media',
             providerKey: entry.providerKey,
@@ -175,28 +183,32 @@ export const buildPlaybackCandidates = async ({
   return healthyCandidates.length ? healthyCandidates : rankedCandidates
 }
 
-export const selectPlaybackCandidate = (candidates: PlaybackCandidate[]): PlaybackSelectionResult => {
-  const rankedCandidates = [...candidates].sort((left, right) => {
-    const leftHealth = getPlaybackHealth(
-      createPlaybackCandidateKey({
-        providerKey: left.providerKey,
-        serverId: left.serverId,
-        episodeKey: left.episodeKey,
-        playbackUrl: left.playbackUrl
-      })
-    )
-    const rightHealth = getPlaybackHealth(
-      createPlaybackCandidateKey({
-        providerKey: right.providerKey,
-        serverId: right.serverId,
-        episodeKey: right.episodeKey,
-        playbackUrl: right.playbackUrl
-      })
-    )
-    const leftScore = left.healthScore + leftHealth.successCount * 4 - leftHealth.failureCount * 6
-    const rightScore = right.healthScore + rightHealth.successCount * 4 - rightHealth.failureCount * 6
+const getRuntimeCandidateScore = (candidate: PlaybackCandidate) => {
+  const health = getPlaybackHealth(
+    createPlaybackCandidateKey({
+      providerKey: candidate.providerKey,
+      serverId: candidate.serverId,
+      episodeKey: candidate.episodeKey,
+      playbackUrl: candidate.playbackUrl
+    })
+  )
 
-    return rightScore - leftScore
+  return candidate.healthScore + health.successCount * 4 - health.failureCount * 6
+}
+
+export const selectPlaybackCandidate = (
+  candidates: PlaybackCandidate[],
+  options: SelectPlaybackCandidateOptions = {}
+): PlaybackSelectionResult => {
+  const rankedCandidates = [...candidates].sort((left, right) => {
+    const leftLockedPriority = options.lockedServerId && left.serverId === options.lockedServerId ? 1 : 0
+    const rightLockedPriority = options.lockedServerId && right.serverId === options.lockedServerId ? 1 : 0
+
+    if (leftLockedPriority !== rightLockedPriority) {
+      return rightLockedPriority - leftLockedPriority
+    }
+
+    return getRuntimeCandidateScore(right) - getRuntimeCandidateScore(left)
   })
 
   return {
