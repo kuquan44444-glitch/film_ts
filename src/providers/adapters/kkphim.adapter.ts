@@ -16,6 +16,7 @@ import {
 const kkphimAdapter: LegacyProviderAdapter = createProviderAdapter({
   key: 'kkphim',
   label: 'KKPhim',
+  shortLabel: 'K',
   sourceButtonLabel: 'KKPhim',
   priority: 1,
   playbackPreference: ['embed', 'm3u8'],

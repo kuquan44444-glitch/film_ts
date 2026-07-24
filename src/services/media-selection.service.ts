@@ -19,6 +19,7 @@ type BuildPlaybackCandidatesInput = {
 
 type SelectPlaybackCandidateOptions = {
   lockedServerId?: string
+  preferredServerIds?: string[]
 }
 
 const PROBE_TIMEOUT_MS = 4500
@@ -159,7 +160,7 @@ export const buildPlaybackCandidates = async ({
           episodeKey: getEpisodeMergeKey(matchedEpisode),
           episodeSlug: matchedEpisode.slug,
           episodeName: matchedEpisode.name,
-          versionLabel: server.version_label || 'Vietsub',
+          versionLabel: server.version_label || 'Mặc định',
           playbackUrl: resolveProxyUrl({
             target: 'media',
             providerKey: entry.providerKey,
@@ -200,12 +201,19 @@ export const selectPlaybackCandidate = (
   candidates: PlaybackCandidate[],
   options: SelectPlaybackCandidateOptions = {}
 ): PlaybackSelectionResult => {
+  const preferredServerIdSet = new Set(options.preferredServerIds ?? [])
   const rankedCandidates = [...candidates].sort((left, right) => {
     const leftLockedPriority = options.lockedServerId && left.serverId === options.lockedServerId ? 1 : 0
     const rightLockedPriority = options.lockedServerId && right.serverId === options.lockedServerId ? 1 : 0
+    const leftPreferredPriority = preferredServerIdSet.has(left.serverId) ? 1 : 0
+    const rightPreferredPriority = preferredServerIdSet.has(right.serverId) ? 1 : 0
 
     if (leftLockedPriority !== rightLockedPriority) {
       return rightLockedPriority - leftLockedPriority
+    }
+
+    if (leftPreferredPriority !== rightPreferredPriority) {
+      return rightPreferredPriority - leftPreferredPriority
     }
 
     return getRuntimeCandidateScore(right) - getRuntimeCandidateScore(left)

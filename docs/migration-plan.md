@@ -13,7 +13,7 @@ Mục tiêu là triển khai đúng kiến trúc đã thống nhất, không t�
   - `kkphim`: metadata + media có health check
   - `vsmov`: metadata + media qua resolver
   - `nguonc`: metadata only
-- Không lộ tên provider ở UI người dùng.
+- Không hiển thị tên provider đầy đủ ở UI; nếu player cần phân biệt nguồn thì chỉ dùng mã nguồn ngắn gọn đã chuẩn hóa như `O`, `K`, `VS`, `N`.
 - Không dùng `iframe` cho player chính.
 - Tách riêng `metadata pipeline` và `media pipeline`.
 - Chỉ chuyển phase khi đã:
@@ -204,7 +204,9 @@ Phạm vi:
   - chọn candidate tốt nhất
 - Tạo `playback-health.service` để ghi nhận thành công/thất bại ngắn hạn.
 - Cập nhật UI watch page:
-  - chỉ hiện `Server 1`, `Server 2`, `Server 3`
+  - hiển thị selector theo dữ liệu thật từ API
+  - `Phiên bản` dùng dạng `Nguồn viết tắt - Bản xem`
+  - `Máy chủ` dùng dạng `Nguồn viết tắt Server n`
   - có trạng thái loading/fallback
   - bỏ phụ thuộc provider priority cứng trong UI
 - Lưu local preference:
@@ -216,19 +218,19 @@ Tiêu chí hoàn thành:
 
 - Player chính không còn dùng `iframe` cho movie playback.
 - Tự fallback giữa candidate hợp lệ khi phát lỗi.
-- Không lộ tên provider cho người dùng.
+- Không lộ tên provider đầy đủ; player chỉ dùng tiền tố nguồn ngắn gọn để phân biệt lựa chọn thật từ API.
 
 ### Trạng thái triển khai
 
 - Đang triển khai tiếp theo đúng phạm vi `Phase 4`, chưa đụng sang `Phase 5`.
 - `Film.tsx` đã dùng unified player dựa trên `video + hls.js`, không còn phụ thuộc `iframe` cho luồng phát chính.
 - UI watch page đã có hai lớp chọn thủ công:
-  - `Phiên bản`: `Vietsub` / `Thuyết minh`
-  - `Máy chủ`: `Server 1`, `Server 2`, `Server 3`
-- Metadata server aggregate hiện mang thêm `version_label`, được suy ra từ `lang` của provider và tên server gốc để phục vụ selector phiên bản mà không lộ provider ra UI.
+  - `Phiên bản`: `O - Vietsub`, `K - Thuyết minh`, `VS - Vietsub`... theo đúng tổ hợp nguồn + bản xem thực sự tồn tại
+  - `Máy chủ`: `O Server 1`, `O Server 2`, `K Server 1`... khi cùng nguồn/bản xem có nhiều server
+- Metadata server aggregate hiện giữ toàn bộ server thật từ adapter/provider, đồng thời mang thêm `source_code`, `version_label` để selector không còn hardcode `Vietsub/Thuyết minh` hay `Server 1/2/3`.
 - Khi người dùng bấm chọn lại một server sau auto fallback, player luôn resolve lại candidate thay vì chỉ hiển thị `Đang chuyển server...` nhưng không đổi nguồn phát.
 - Khi người dùng chọn server thủ công, bước chọn candidate sẽ ưu tiên cứng server đó trước; fallback vẫn tiếp tục hoạt động với các candidate còn lại nếu server vừa chọn lỗi thật.
-- Local playback preference hiện lưu thêm `preferredVersionLabel` để giữ lại phiên bản đã chọn giữa các lần xem.
+- Local playback preference hiện lưu thêm `preferredVersionLabel` và `preferredVersionKey` để giữ lại đúng tổ hợp nguồn + bản xem giữa các lần xem.
 - Đã xác nhận lại `npm install`, `npm run build` và `npm run lint` thành công sau thay đổi của `Phase 4`.
 
 ## Phase 5: Proxy Mode Runtime
@@ -276,7 +278,7 @@ Không được nhảy phase trừ khi phát hiện blocker kỹ thuật thật 
    - tìm kiếm
    - chi tiết phim
    - trang xem phim
-4. Kiểm tra không lộ provider trái với kiến trúc mục tiêu.
+4. Kiểm tra UI không lộ tên provider đầy đủ ngoài những tiền tố nguồn ngắn gọn đã được chuẩn hóa cho player selector.
 5. Cập nhật docs nếu có thay đổi implementation hoặc quyết định kỹ thuật nhỏ.
 6. Chỉ khi mọi mục phía trên ổn định mới sang phase tiếp theo.
 

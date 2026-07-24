@@ -16,6 +16,7 @@ import {
 const vsmovAdapter: LegacyProviderAdapter = createProviderAdapter({
   key: 'vsmov',
   label: 'VSMOV',
+  shortLabel: 'VS',
   sourceButtonLabel: 'VSMOV',
   priority: 2,
   playbackPreference: ['embed', 'm3u8'],

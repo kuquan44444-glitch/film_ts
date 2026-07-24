@@ -18,6 +18,7 @@ import {
 const nguoncAdapter: LegacyProviderAdapter = createProviderAdapter({
   key: 'nguonc',
   label: 'Nguồn C',
+  shortLabel: 'N',
   sourceButtonLabel: 'Nguồn C',
   priority: 3,
   playbackPreference: ['embed', 'm3u8'],
