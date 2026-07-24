@@ -3,13 +3,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Helmet } from 'react-helmet-async'
 import { useQuery } from 'react-query'
 import { Link, createSearchParams, useParams } from 'react-router-dom'
+import FacebookShareButton from 'react-share/es/FacebookShareButton'
 import filmApis from 'src/apis/filmApis'
-import type { PlaybackMode } from 'src/apis/filmSourceAdapters'
-import { getPlaybackPreference } from 'src/apis/filmSourceAdapters'
+import { providerMap } from 'src/apis/filmSourceAdapters'
+import type { PlaybackCandidate } from 'src/domain/playback.types'
+import { getPlaybackCandidateKey, preparePlaybackSelection } from 'src/services/media-selection.service'
+import { markPlaybackHealthFailure, markPlaybackHealthSuccess } from 'src/services/playback-health.service'
+import { getPlaybackPreferenceStorage, setPlaybackPreferenceStorage } from 'src/storage/playback-preference.storage'
 import { useQueryConfig } from 'src/hooks'
 import type { episodeData, episodeServer } from 'src/types'
 import PATH from 'src/utils/path'
-import FacebookShareButton from 'react-share/es/FacebookShareButton'
 
 type HlsInstance = {
   loadSource: (source: string) => void
@@ -31,6 +34,62 @@ let hlsScriptPromise: Promise<HlsConstructor | null> | null = null
 const DEFAULT_PLAYER_MESSAGE = 'Đang chuẩn bị phát phim.'
 const PLAYER_READY_MESSAGE = 'Đang phát phim.'
 const PLAYER_LOADING_MESSAGE = 'Đang tải phim...'
+const PLAYER_CHECKING_MESSAGE = 'Đang kiểm tra chất lượng nguồn...'
+
+type EpisodeOption = {
+  key: string
+  label: string
+  order: number
+}
+
+const normalizeEpisodeText = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+
+const createEpisodeKey = (episode: Pick<episodeData, 'slug' | 'filename' | 'name'>) => {
+  const slugValue = normalizeEpisodeText(episode.slug)
+  if (slugValue) return `slug:${slugValue}`
+
+  const filenameValue = normalizeEpisodeText(episode.filename)
+  if (filenameValue) return `file:${filenameValue}`
+
+  return `name:${normalizeEpisodeText(episode.name || 'full')}`
+}
+
+const extractEpisodeOrder = (episode: Pick<episodeData, 'name' | 'filename' | 'slug'>, fallbackIndex: number) => {
+  const numericValue = Number(episode.name)
+  if (Number.isFinite(numericValue) && numericValue > 0) {
+    return numericValue
+  }
+
+  const matchedNumber = episode.filename.match(/\d+/)?.[0] ?? episode.slug.match(/\d+/)?.[0]
+  if (matchedNumber) {
+    return Number(matchedNumber)
+  }
+
+  return fallbackIndex + 1
+}
+
+const getPlaybackScore = (server: episodeServer, candidate: Pick<PlaybackCandidate, 'format' | 'resolverType'>) => {
+  const providerScoreMap: Record<episodeServer['source'], number> = {
+    ophim: 96,
+    kkphim: 82,
+    vsmov: 76,
+    nguonc: 20
+  }
+
+  let score = providerScoreMap[server.source] ?? 60
+  score += candidate.format === 'm3u8' ? 8 : 6
+  score += candidate.resolverType === 'direct' ? 6 : 2
+  return score
+}
 
 const loadHlsConstructor = async () => {
   if (typeof window === 'undefined') return null
@@ -69,13 +128,12 @@ const loadHlsConstructor = async () => {
 
 const Film = () => {
   const queryConfig = useQueryConfig()
-  const [nameServer, setNameServer] = useState<string>('')
-  const [episodeSlug, setEpisodeSlug] = useState<string>('')
+  const [selectedEpisodeKey, setSelectedEpisodeKey] = useState<string>('')
   const [playerMessage, setPlayerMessage] = useState<string>('')
   const [isPlayerLoading, setIsPlayerLoading] = useState<boolean>(false)
-  const [attemptedServers, setAttemptedServers] = useState<string[]>([])
-  const [attemptedPlaybackModes, setAttemptedPlaybackModes] = useState<PlaybackMode[]>([])
-  const [playbackMode, setPlaybackMode] = useState<PlaybackMode>('embed')
+  const [playbackCandidates, setPlaybackCandidates] = useState<PlaybackCandidate[]>([])
+  const [activeCandidateIndex, setActiveCandidateIndex] = useState<number>(0)
+  const [attemptedCandidateKeys, setAttemptedCandidateKeys] = useState<string[]>([])
   const [playerReloadToken, setPlayerReloadToken] = useState<number>(0)
   const fallbackTimerRef = useRef<number>()
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -89,19 +147,41 @@ const Film = () => {
   })
   const dataFilm = data?.data.data
   const servers = useMemo(() => dataFilm?.item.episodes ?? [], [dataFilm])
-  const selectedServer = useMemo(
-    () => servers.find((item) => item.server_name === nameServer) ?? servers[0],
-    [nameServer, servers]
+  const episodeOptions = useMemo<EpisodeOption[]>(() => {
+    const episodeMap = new Map<string, EpisodeOption>()
+
+    servers.forEach((server) => {
+      server.server_data.forEach((episode, index) => {
+        const episodeKey = createEpisodeKey(episode)
+        const currentEpisode = episodeMap.get(episodeKey)
+        const nextEpisode: EpisodeOption = {
+          key: episodeKey,
+          label: episode.name || episode.filename || `Tập ${index + 1}`,
+          order: extractEpisodeOrder(episode, index)
+        }
+
+        if (!currentEpisode) {
+          episodeMap.set(episodeKey, nextEpisode)
+          return
+        }
+
+        episodeMap.set(episodeKey, {
+          ...currentEpisode,
+          label: currentEpisode.label || nextEpisode.label,
+          order: Math.min(currentEpisode.order, nextEpisode.order)
+        })
+      })
+    })
+
+    return Array.from(episodeMap.values()).sort((left, right) => left.order - right.order)
+  }, [servers])
+  const selectedEpisode = useMemo(
+    () => episodeOptions.find((item) => item.key === selectedEpisodeKey) ?? episodeOptions[0],
+    [episodeOptions, selectedEpisodeKey]
   )
-  const selectedEpisode = useMemo(() => {
-    if (!selectedServer) return undefined
-    return selectedServer.server_data.find((item) => item.slug === episodeSlug) ?? selectedServer.server_data[0]
-  }, [episodeSlug, selectedServer])
-  const currentEpisodeUrl =
-    playbackMode === 'm3u8'
-      ? selectedEpisode?.link_m3u8 || selectedEpisode?.link_embed || ''
-      : selectedEpisode?.link_embed || selectedEpisode?.link_m3u8 || ''
-  const shouldUseVideo = playbackMode === 'm3u8' && Boolean(selectedEpisode?.link_m3u8)
+  const activeCandidate = playbackCandidates[activeCandidateIndex] ?? null
+  const activeCandidateKey = activeCandidate ? getPlaybackCandidateKey(activeCandidate) : ''
+  const activeServerLabel = activeCandidate ? `Server ${activeCandidateIndex + 1}` : ''
 
   const clearFallbackTimer = useCallback(() => {
     if (fallbackTimerRef.current) {
@@ -120,199 +200,236 @@ const Film = () => {
     setPlayerReloadToken((previous) => previous + 1)
   }, [])
 
-  const getAvailablePlaybackModes = useCallback((episode?: episodeData, server?: episodeServer): PlaybackMode[] => {
-    if (!episode) return []
+  const resolveCandidatesForEpisode = useCallback(
+    async (episodeOption: EpisodeOption): Promise<PlaybackCandidate[]> => {
+      const settledCandidates = await Promise.allSettled(
+        servers.map(async (server) => {
+          const matchedEpisode = server.server_data.find((item) => createEpisodeKey(item) === episodeOption.key)
+          const provider = providerMap[server.source]
 
-    const playbackPreference = getPlaybackPreference(server?.source)
-    return playbackPreference.filter((mode, index, modes) => {
-      const playbackUrl = mode === 'm3u8' ? episode.link_m3u8 : episode.link_embed
-      if (!playbackUrl || !/^https?:\/\//i.test(playbackUrl)) return false
-      return modes.indexOf(mode) === index
-    })
-  }, [])
+          if (!matchedEpisode || !provider.resolveMedia) return []
 
-  const getPreferredPlaybackMode = useCallback(
-    (episode?: episodeData, server?: episodeServer): PlaybackMode =>
-      getAvailablePlaybackModes(episode, server)[0] || 'embed',
-    [getAvailablePlaybackModes]
+          const resolvedCandidates = await provider.resolveMedia({
+            episode: matchedEpisode,
+            server
+          })
+
+          return resolvedCandidates
+            .filter(
+              (candidate) =>
+                /^https?:\/\//i.test(candidate.playbackUrl) &&
+                (candidate.format === 'm3u8' || candidate.format === 'mp4')
+            )
+            .map(
+              (candidate, index): PlaybackCandidate => ({
+                serverId: `${server.source}:${server.server_name}:${index}`,
+                episodeKey: episodeOption.key,
+                playbackUrl: candidate.playbackUrl,
+                format: candidate.format,
+                qualityLabel: candidate.qualityLabel || dataFilm?.item.quality,
+                providerKey: candidate.providerKey,
+                resolverType: candidate.resolverType,
+                viaProxy: false,
+                healthScore: getPlaybackScore(server, candidate)
+              })
+            )
+        })
+      )
+
+      const uniqueCandidates = new Map<string, PlaybackCandidate>()
+      settledCandidates.forEach((result) => {
+        if (result.status !== 'fulfilled') return
+
+        result.value.forEach((candidate) => {
+          const candidateKey = `${candidate.providerKey}:${candidate.format}:${candidate.playbackUrl}`
+          if (!uniqueCandidates.has(candidateKey)) {
+            uniqueCandidates.set(candidateKey, candidate)
+          }
+        })
+      })
+
+      return Array.from(uniqueCandidates.values())
+    },
+    [dataFilm?.item.quality, servers]
   )
 
-  const getEpisodeForServer = useCallback((server: episodeServer, preferredEpisode?: episodeData) => {
-    if (!preferredEpisode) return server.server_data[0]
-
-    return (
-      server.server_data.find(
-        (item) =>
-          item.slug === preferredEpisode.slug ||
-          item.name === preferredEpisode.name ||
-          item.filename === preferredEpisode.filename
-      ) ?? server.server_data[0]
-    )
-  }, [])
-
-  const activateServer = useCallback(
+  const activateCandidate = useCallback(
     (
-      server: episodeServer,
+      candidateIndex: number,
       options?: {
-        preferredEpisode?: episodeData
-        resetAttempts?: boolean
         message?: string
+        resetAttempts?: boolean
       }
     ) => {
-      const nextEpisode = getEpisodeForServer(server, options?.preferredEpisode)
-      const nextPlaybackMode = getPreferredPlaybackMode(nextEpisode, server)
+      const nextCandidate = playbackCandidates[candidateIndex]
+      if (!nextCandidate) return
+
       clearFallbackTimer()
       destroyHls()
       bumpPlayerReloadToken()
-      setNameServer(server.server_name)
-      setEpisodeSlug(nextEpisode?.slug || '')
-      setPlaybackMode(nextPlaybackMode)
-      setAttemptedPlaybackModes(nextEpisode ? [nextPlaybackMode] : [])
-      setIsPlayerLoading(Boolean(nextEpisode?.link_embed || nextEpisode?.link_m3u8))
-      setPlayerMessage(options?.message || PLAYER_LOADING_MESSAGE)
-      setAttemptedServers((previous) => {
-        if (options?.resetAttempts) return [server.server_name]
-        return Array.from(new Set([...previous, server.server_name]))
+      setActiveCandidateIndex(candidateIndex)
+      setIsPlayerLoading(true)
+      setPlayerMessage(options?.message || `${PLAYER_LOADING_MESSAGE} ${`Server ${candidateIndex + 1}`}`)
+      setAttemptedCandidateKeys((previous) => {
+        const nextKey = getPlaybackCandidateKey(nextCandidate)
+        if (options?.resetAttempts) return [nextKey]
+        return Array.from(new Set([...previous, nextKey]))
+      })
+      setPlaybackPreferenceStorage({
+        preferredServerIndex: candidateIndex,
+        preferredPlaybackMode: nextCandidate.format
       })
     },
-    [bumpPlayerReloadToken, clearFallbackTimer, destroyHls, getEpisodeForServer, getPreferredPlaybackMode]
+    [bumpPlayerReloadToken, clearFallbackTimer, destroyHls, playbackCandidates]
   )
 
-  const handleFallback = useCallback(
+  const handleCandidateFallback = useCallback(
     (reason: string) => {
-      if (!servers.length) return
-
-      const nextServer = servers.find((server) => !attemptedServers.includes(server.server_name))
-
-      if (!nextServer) {
-        clearFallbackTimer()
-        setIsPlayerLoading(false)
-        setPlayerMessage(`${reason}. Hãy thử lựa chọn khác bên dưới.`)
-        return
+      if (activeCandidateKey) {
+        markPlaybackHealthFailure(activeCandidateKey)
       }
 
-      activateServer(nextServer, {
-        preferredEpisode: selectedEpisode,
-        message: `${reason}. Đang thử lựa chọn khác.`
-      })
-    },
-    [activateServer, attemptedServers, clearFallbackTimer, selectedEpisode, servers]
-  )
-
-  const handlePlaybackFailure = useCallback(
-    (reason: string) => {
-      const fallbackPlaybackMode = getAvailablePlaybackModes(selectedEpisode, selectedServer).find(
-        (mode) => mode !== playbackMode && !attemptedPlaybackModes.includes(mode)
+      const nextCandidateIndex = playbackCandidates.findIndex(
+        (candidate, index) =>
+          index > activeCandidateIndex && !attemptedCandidateKeys.includes(getPlaybackCandidateKey(candidate))
       )
 
-      if (fallbackPlaybackMode) {
+      if (nextCandidateIndex === -1) {
         clearFallbackTimer()
-        destroyHls()
-        bumpPlayerReloadToken()
-        setPlaybackMode(fallbackPlaybackMode)
-        setAttemptedPlaybackModes((previous) => Array.from(new Set([...previous, fallbackPlaybackMode])))
-        setIsPlayerLoading(true)
-        setPlayerMessage(`${reason}. Đang thử cách phát khác.`)
+        setIsPlayerLoading(false)
+        setPlayerMessage(`${reason}. Không còn nguồn trực tiếp khả dụng cho tập này.`)
         return
       }
 
-      handleFallback(reason)
+      activateCandidate(nextCandidateIndex, {
+        message: `${reason}. Đang chuyển sang Server ${nextCandidateIndex + 1}.`
+      })
     },
     [
-      attemptedPlaybackModes,
-      bumpPlayerReloadToken,
+      activateCandidate,
+      activeCandidateIndex,
+      activeCandidateKey,
+      attemptedCandidateKeys,
       clearFallbackTimer,
-      destroyHls,
-      getAvailablePlaybackModes,
-      handleFallback,
-      playbackMode,
-      selectedEpisode,
-      selectedServer
+      playbackCandidates
     ]
   )
 
   useEffect(() => {
     clearFallbackTimer()
     destroyHls()
-    setNameServer('')
-    setEpisodeSlug('')
+    setSelectedEpisodeKey('')
     setPlayerMessage('')
     setIsPlayerLoading(false)
-    setAttemptedServers([])
-    setAttemptedPlaybackModes([])
-    setPlaybackMode('embed')
+    setPlaybackCandidates([])
+    setActiveCandidateIndex(0)
+    setAttemptedCandidateKeys([])
     setPlayerReloadToken(0)
   }, [clearFallbackTimer, destroyHls, slug])
 
   useEffect(() => {
-    if (servers.length && !nameServer) {
-      activateServer(servers[0], {
-        resetAttempts: true,
-        message: DEFAULT_PLAYER_MESSAGE
-      })
+    if (episodeOptions.length && !selectedEpisodeKey) {
+      setSelectedEpisodeKey(episodeOptions[0].key)
     }
-  }, [activateServer, nameServer, servers])
+  }, [episodeOptions, selectedEpisodeKey])
 
   useEffect(() => {
-    if (!selectedServer) return
-
-    const nextEpisode =
-      selectedServer.server_data.find((item) => item.slug === episodeSlug) ?? selectedServer.server_data[0]
-
-    if (nextEpisode && episodeSlug !== nextEpisode.slug) {
-      setEpisodeSlug(nextEpisode.slug)
-      const nextPlaybackMode = getPreferredPlaybackMode(nextEpisode, selectedServer)
-      setPlaybackMode(nextPlaybackMode)
-      setAttemptedPlaybackModes([nextPlaybackMode])
+    if (selectedEpisodeKey && !episodeOptions.some((item) => item.key === selectedEpisodeKey)) {
+      setSelectedEpisodeKey(episodeOptions[0]?.key || '')
     }
-  }, [episodeSlug, getPreferredPlaybackMode, selectedServer])
+  }, [episodeOptions, selectedEpisodeKey])
 
   useEffect(() => {
-    if (!currentEpisodeUrl) {
-      if (selectedServer) {
-        handlePlaybackFailure('Lựa chọn hiện tại không có link hợp lệ')
+    let isCancelled = false
+
+    const resolvePlaybackCandidates = async () => {
+      if (!selectedEpisode) {
+        setPlaybackCandidates([])
+        setActiveCandidateIndex(0)
+        setAttemptedCandidateKeys([])
+        setIsPlayerLoading(false)
+        setPlayerMessage(DEFAULT_PLAYER_MESSAGE)
+        return
       }
-      return
+
+      setIsPlayerLoading(true)
+      setPlayerMessage(PLAYER_CHECKING_MESSAGE)
+      const resolvedCandidates = await resolveCandidatesForEpisode(selectedEpisode)
+
+      if (isCancelled) return
+
+      if (!resolvedCandidates.length) {
+        clearFallbackTimer()
+        destroyHls()
+        setPlaybackCandidates([])
+        setActiveCandidateIndex(0)
+        setAttemptedCandidateKeys([])
+        setIsPlayerLoading(false)
+        setPlayerMessage('Hiện chưa có nguồn phát trực tiếp phù hợp cho tập này.')
+        return
+      }
+
+      const selection = await preparePlaybackSelection(resolvedCandidates)
+      if (isCancelled) return
+
+      const orderedCandidates = selection.selected ? [selection.selected, ...selection.fallbackQueue] : []
+      const preferredServerIndex = Math.min(
+        getPlaybackPreferenceStorage().preferredServerIndex,
+        Math.max(orderedCandidates.length - 1, 0)
+      )
+
+      setPlaybackCandidates(orderedCandidates)
+      setActiveCandidateIndex(preferredServerIndex)
+      setAttemptedCandidateKeys(
+        orderedCandidates[preferredServerIndex]
+          ? [getPlaybackCandidateKey(orderedCandidates[preferredServerIndex])]
+          : []
+      )
+      setPlayerReloadToken((previous) => previous + 1)
+      setPlayerMessage(`${PLAYER_LOADING_MESSAGE} Server ${preferredServerIndex + 1}.`)
     }
 
-    if (shouldUseVideo) return
-
-    setIsPlayerLoading(true)
-    clearFallbackTimer()
-    fallbackTimerRef.current = window.setTimeout(() => {
-      handlePlaybackFailure('Lựa chọn hiện tại phản hồi chậm hoặc lỗi')
-    }, 12000)
+    void resolvePlaybackCandidates()
 
     return () => {
-      clearFallbackTimer()
+      isCancelled = true
     }
-  }, [clearFallbackTimer, currentEpisodeUrl, handlePlaybackFailure, playerReloadToken, selectedServer, shouldUseVideo])
+  }, [clearFallbackTimer, destroyHls, resolveCandidatesForEpisode, selectedEpisode])
 
   useEffect(() => {
-    if (!shouldUseVideo || !selectedEpisode?.link_m3u8 || !videoRef.current) {
+    if (!activeCandidate || !videoRef.current) {
       destroyHls()
       return
     }
 
     const videoElement = videoRef.current
     let isCancelled = false
+    let hasMarkedReady = false
+    const currentCandidateKey = getPlaybackCandidateKey(activeCandidate)
 
     const handleReady = () => {
+      if (hasMarkedReady) return
+      hasMarkedReady = true
       clearFallbackTimer()
       setIsPlayerLoading(false)
-      setPlayerMessage(PLAYER_READY_MESSAGE)
+      setPlayerMessage(`${PLAYER_READY_MESSAGE} ${activeServerLabel}.`)
+      markPlaybackHealthSuccess(currentCandidateKey)
+      setPlaybackPreferenceStorage({
+        preferredServerIndex: activeCandidateIndex,
+        preferredPlaybackMode: activeCandidate.format
+      })
     }
 
     const handleError = () => {
       if (!isCancelled) {
-        handlePlaybackFailure('Lựa chọn hiện tại phát sinh lỗi')
+        handleCandidateFallback(`${activeServerLabel || 'Server hiện tại'} phát sinh lỗi`)
       }
     }
 
     const startFallbackTimer = () => {
       clearFallbackTimer()
       fallbackTimerRef.current = window.setTimeout(() => {
-        handlePlaybackFailure('Lựa chọn hiện tại phản hồi chậm hoặc lỗi')
+        handleError()
       }, 12000)
     }
 
@@ -328,8 +445,15 @@ const Film = () => {
       videoElement.removeAttribute('src')
       videoElement.load()
 
+      if (activeCandidate.format === 'mp4') {
+        videoElement.src = activeCandidate.playbackUrl
+        videoElement.load()
+        void videoElement.play().catch(() => undefined)
+        return
+      }
+
       if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
-        videoElement.src = selectedEpisode.link_m3u8
+        videoElement.src = activeCandidate.playbackUrl
         videoElement.load()
         void videoElement.play().catch(() => undefined)
         return
@@ -344,7 +468,7 @@ const Film = () => {
             enableWorker: true
           })
           hlsRef.current = hls
-          hls.loadSource(selectedEpisode.link_m3u8)
+          hls.loadSource(activeCandidate.playbackUrl)
           hls.attachMedia(videoElement)
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
             void videoElement.play().catch(() => undefined)
@@ -357,10 +481,10 @@ const Film = () => {
           return
         }
 
-        handlePlaybackFailure('Trình duyệt không hỗ trợ phát m3u8')
+        handleCandidateFallback('Trình duyệt không hỗ trợ phát m3u8')
       } catch (_error) {
         if (!isCancelled) {
-          handlePlaybackFailure('Không thể khởi tạo trình phát m3u8')
+          handleCandidateFallback('Không thể khởi tạo trình phát m3u8')
         }
       }
     }
@@ -375,7 +499,17 @@ const Film = () => {
       destroyHls()
       clearFallbackTimer()
     }
-  }, [clearFallbackTimer, destroyHls, handlePlaybackFailure, playerReloadToken, selectedEpisode, shouldUseVideo])
+  }, [
+    activeCandidate,
+    activeCandidate.format,
+    activeCandidate.playbackUrl,
+    activeCandidateIndex,
+    activeServerLabel,
+    clearFallbackTimer,
+    destroyHls,
+    handleCandidateFallback,
+    playerReloadToken
+  ])
 
   if (!dataFilm) return null
 
@@ -389,14 +523,12 @@ const Film = () => {
         <div className='relative w-full h-[36vh] sm:h-[56vh] md:h-[66vh] lg:h-[76vh] xl:h-[86vh] bg-black'>
           {isPlayerLoading && (
             <div className='absolute inset-0 z-10 flex items-center justify-center bg-black/40 text-white'>
-              {PLAYER_LOADING_MESSAGE}
+              {playerMessage || PLAYER_LOADING_MESSAGE}
             </div>
           )}
-          {shouldUseVideo ? (
+          {activeCandidate ? (
             <video
-              key={`${selectedServer?.server_name || 'default'}-${
-                selectedEpisode?.slug || 'episode'
-              }-${playbackMode}-${playerReloadToken}`}
+              key={`${activeCandidate.serverId}-${activeCandidate.format}-${playerReloadToken}`}
               ref={videoRef}
               className='h-full w-full bg-black'
               controls
@@ -407,23 +539,9 @@ const Film = () => {
               <track kind='captions' label='Vietnamese captions' srcLang='vi' />
             </video>
           ) : (
-            <iframe
-              key={`${selectedServer?.server_name || 'default'}-${
-                selectedEpisode?.slug || 'episode'
-              }-${playbackMode}-${playerReloadToken}`}
-              className='w-full h-full'
-              title={dataFilm.item.name}
-              src={currentEpisodeUrl}
-              frameBorder={0}
-              loading='eager'
-              onLoad={() => {
-                clearFallbackTimer()
-                setIsPlayerLoading(false)
-                setPlayerMessage(PLAYER_READY_MESSAGE)
-              }}
-              onError={() => handlePlaybackFailure('Lựa chọn hiện tại phát sinh lỗi')}
-              allowFullScreen
-            ></iframe>
+            <div className='flex h-full w-full items-center justify-center px-6 text-center text-white/70'>
+              {selectedEpisode ? 'Tập này hiện chưa có nguồn phát trực tiếp khả dụng.' : 'Đang chuẩn bị danh sách tập.'}
+            </div>
           )}
         </div>
         <div className='container mt-4 px-4'>
@@ -431,21 +549,20 @@ const Film = () => {
             {playerMessage || DEFAULT_PLAYER_MESSAGE}
           </div>
         </div>
-        {servers.length > 0 ? (
+        {playbackCandidates.length > 0 ? (
           <div className='mt-6 flex items-center justify-center gap-2'>
-            {servers.map((item) => {
-              const isActive = item.server_name === (selectedServer?.server_name || nameServer)
+            {playbackCandidates.map((candidate, index) => {
+              const isActive = index === activeCandidateIndex
               return (
                 <button
-                  title={item.server_name}
+                  title={`Chọn Server ${index + 1}`}
                   onClick={() =>
-                    activateServer(item, {
-                      preferredEpisode: selectedEpisode,
+                    activateCandidate(index, {
                       resetAttempts: true,
-                      message: 'Đang đổi lựa chọn phát...'
+                      message: `Đang chuyển sang Server ${index + 1}.`
                     })
                   }
-                  key={item.server_name}
+                  key={getPlaybackCandidateKey(candidate)}
                   className={classNames('rounded px-3 py-2 font-medium', {
                     'bg-white/40': isActive,
                     'bg-white': !isActive
@@ -464,17 +581,21 @@ const Film = () => {
                         <path strokeLinecap='round' strokeLinejoin='round' d='M4.5 12.75l6 6 9-13.5' />
                       </svg>
                     )}
-                    {item.server_name}
+                    {`Server ${index + 1}`}
                   </span>
                 </button>
               )
             })}
           </div>
         ) : (
-          <div className='container mt-6 px-4 text-center text-sm text-white/60'>Hiện chưa lấy được lựa chọn phát.</div>
+          <div className='container mt-6 px-4 text-center text-sm text-white/60'>
+            Hiện chưa lấy được nguồn phát trực tiếp cho tập này.
+          </div>
         )}
         <div className='container px-4 mt-2'>
-          <p className='text-sm text-white/60'>Nếu phim bị lag, đứng hoặc lỗi, hãy bấm lựa chọn khác để thử lại.</p>
+          <p className='text-sm text-white/60'>
+            Player sẽ tự chuyển sang server kế tiếp khi nguồn hiện tại lỗi hoặc phản hồi chậm.
+          </p>
         </div>
         <div className='container px-4 mt-6'>
           <div className='block md:flex items-center justify-between mb-10'>
@@ -522,30 +643,28 @@ const Film = () => {
             </Link>
           </div>
           <div className='flex items-center flex-wrap gap-x-3 gap-y-4 max-h-[250px] overflow-auto pb-2 pr-[6px]'>
-            {selectedServer?.server_data.map((item, index) => (
+            {episodeOptions.map((item, index) => (
               <button
-                title={`Tập ${item.name}`}
+                title={item.label}
                 onClick={() => {
-                  const nextPlaybackMode = getPreferredPlaybackMode(item, selectedServer)
-                  setEpisodeSlug(item.slug)
-                  setPlaybackMode(nextPlaybackMode)
-                  bumpPlayerReloadToken()
-                  setIsPlayerLoading(Boolean(item.link_embed || item.link_m3u8))
-                  setAttemptedServers([selectedServer.server_name])
-                  setAttemptedPlaybackModes([nextPlaybackMode])
-                  setPlayerMessage(`Đã đổi sang tập ${item.name}.`)
+                  setSelectedEpisodeKey(item.key)
+                  setPlaybackCandidates([])
+                  setActiveCandidateIndex(0)
+                  setAttemptedCandidateKeys([])
+                  setIsPlayerLoading(true)
+                  setPlayerMessage(`Đang chuyển sang ${item.label}.`)
                 }}
-                disabled={item.slug === selectedEpisode?.slug}
+                disabled={item.key === selectedEpisode?.key}
                 key={index}
                 className={classNames(
                   'flex-shrink-0 text-white whitespace-nowrap overflow-hidden text-lg min-w-[99px] h-[40px] px-4 rounded',
                   {
-                    'bg-green-400': item.slug !== selectedEpisode?.slug,
-                    'bg-green-400/40': item.slug === selectedEpisode?.slug
+                    'bg-green-400': item.key !== selectedEpisode?.key,
+                    'bg-green-400/40': item.key === selectedEpisode?.key
                   }
                 )}
               >
-                Tập {item.name}
+                {item.label.startsWith('Tập ') ? item.label : `Tập ${item.label}`}
               </button>
             ))}
           </div>

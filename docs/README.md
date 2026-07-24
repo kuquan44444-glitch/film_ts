@@ -28,6 +28,8 @@ Không có file code ứng dụng nào bị sửa trong bước này.
 - Đã hoàn thành giai đoạn phân tích và lập kế hoạch.
 - Đã hoàn thành `Phase 1: Nền Tảng Kiến Trúc`.
 - Đã hoàn thành `Phase 2: Aggregation Cho List/Home/Search`.
+- Đã hoàn thành `Phase 3: Detail Aggregation Và Recommendation`.
+- Đã hoàn thành `Phase 4: Player Thống Nhất Và Tự Fallback`.
 - Đã tạo cây thư mục mới cho:
   - `src/providers`
   - `src/domain`
@@ -41,5 +43,8 @@ Không có file code ứng dụng nào bị sửa trong bước này.
 - `Home` đã đi qua một query aggregate và dedupe toàn màn hình giữa các section.
 - `Search` đã query đa provider song song, có `debounce 400ms` và sort theo search score.
 - `List`, `Home`, `Search` vẫn đi qua facade `filmApis` để hạn chế lan rộng phạm vi refactor.
-- Chưa thay player hiện tại sang unified player không `iframe`.
+- `Detail` đã đi qua `detail-aggregation.service` và recommendation unified.
+- Trang xem phim đã dùng unified player chỉ phát media trực tiếp `m3u8/mp4`, không còn fallback sang `iframe`.
+- UI trang xem phim chỉ hiển thị `Server 1..n`, có auto fallback và health tracking ngắn hạn.
+- Đã lưu local preference cho `preferredServerIndex` và `preferredPlaybackMode`.
 - Chưa bật proxy runtime từ UI.

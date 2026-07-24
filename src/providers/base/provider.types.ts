@@ -2,7 +2,7 @@ export type ProviderKey = 'ophim' | 'kkphim' | 'vsmov' | 'nguonc'
 
 export type ProviderOptionType = 'genres' | 'country'
 
-export type PlaybackMode = 'm3u8' | 'embed'
+export type PlaybackMode = 'm3u8' | 'mp4'
 
 export type ProviderCapabilities = {
   list: boolean

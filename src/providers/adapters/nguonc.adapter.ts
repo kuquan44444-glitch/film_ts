@@ -20,7 +20,7 @@ const nguoncAdapter: LegacyProviderAdapter = createProviderAdapter({
   label: 'Nguồn C',
   sourceButtonLabel: 'Nguồn C',
   priority: 3,
-  playbackPreference: ['embed', 'm3u8'],
+  playbackPreference: [],
   capabilities: providerCapabilities({
     directMedia: false,
     requiresMediaResolver: false

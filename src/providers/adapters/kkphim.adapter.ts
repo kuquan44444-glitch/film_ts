@@ -18,7 +18,7 @@ const kkphimAdapter: LegacyProviderAdapter = createProviderAdapter({
   label: 'KKPhim',
   sourceButtonLabel: 'KKPhim',
   priority: 1,
-  playbackPreference: ['embed', 'm3u8'],
+  playbackPreference: ['m3u8'],
   capabilities: providerCapabilities({
     directMedia: true,
     requiresMediaResolver: false

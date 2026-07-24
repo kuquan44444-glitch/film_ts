@@ -18,7 +18,7 @@ const vsmovAdapter: LegacyProviderAdapter = createProviderAdapter({
   label: 'VSMOV',
   sourceButtonLabel: 'VSMOV',
   priority: 2,
-  playbackPreference: ['embed', 'm3u8'],
+  playbackPreference: ['m3u8'],
   capabilities: providerCapabilities({
     directMedia: false,
     requiresMediaResolver: true

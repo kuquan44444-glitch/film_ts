@@ -105,7 +105,7 @@ Tiêu chí hoàn thành:
 - `src/apis/filmSourceAdapters.ts` hiện là lớp tương thích, re-export từ provider registry mới.
 - `filmApis` vẫn được giữ để không buộc refactor UI ngay trong Phase 1.
 - Đã build thành công sau khi hoàn tất Phase 1.
-- Chưa bắt đầu `Phase 2`.
+- Các phase sau tiếp tục bám trên facade này để giảm phạm vi refactor theo từng bước.
 
 ## Phase 2: Aggregation Cho List/Home/Search
 
@@ -162,6 +162,14 @@ Tiêu chí hoàn thành:
 - Metadata phong phú hơn nhưng không làm hỏng route/detail cũ.
 - Recommendation có thể được bật bằng unified data mà không lệch kiến trúc.
 
+### Trạng thái triển khai
+
+- Hoàn thành.
+- `filmApis.getFilm()` đã đi qua `detail-aggregation.service`.
+- `Detail` đang đọc dữ liệu detail đã merge từ pipeline unified hiện tại.
+- Recommendation đã được bật từ `recommendation.service` dựa trên metadata overlap và dedupe.
+- Build và lint đều đã chạy thành công sau khi rà soát Phase 3.
+
 ## Phase 4: Player Thống Nhất Và Tự Fallback
 
 Mục tiêu:
@@ -194,6 +202,19 @@ Tiêu chí hoàn thành:
 - Player chính không còn dùng `iframe` cho movie playback.
 - Tự fallback giữa candidate hợp lệ khi phát lỗi.
 - Không lộ tên provider cho người dùng.
+
+### Trạng thái triển khai
+
+- Hoàn thành.
+- `Film.tsx` đã bỏ fallback `iframe`; player chỉ còn phát media trực tiếp `m3u8/mp4`.
+- Watch page đã resolve media qua provider resolver hiện có và gom candidate theo từng tập.
+- `media-selection.service` đã có preflight probe timeout ngắn, tính lại `healthScore` và xếp hạng candidate.
+- `playback-health.service` đang ghi nhận success/failure ngắn hạn để hỗ trợ lần chọn tiếp theo.
+- UI xem phim chỉ hiển thị `Server 1..n`, không lộ tên provider.
+- Khi nguồn hiện tại lỗi hoặc phản hồi chậm, player tự chuyển sang candidate kế tiếp của cùng tập.
+- Đã lưu `preferredServerIndex` và `preferredPlaybackMode` trong local storage.
+- `proxyMode` storage/hook đã tồn tại, nhưng runtime proxy UI vẫn thuộc `Phase 5`.
+- Build và lint đều đã chạy thành công sau khi hoàn tất Phase 4.
 
 ## Phase 5: Proxy Mode Runtime
 

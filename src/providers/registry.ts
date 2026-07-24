@@ -36,7 +36,7 @@ export const providerOrder = providers.map((provider) => provider.key)
 export const optionProviderOrder: ProviderKey[] = ['kkphim', 'vsmov', 'ophim']
 
 export const getPlaybackPreference = (source?: ProviderKey): PlaybackMode[] =>
-  source ? providerMap[source]?.playbackPreference ?? ['embed', 'm3u8'] : ['embed', 'm3u8']
+  source ? providerMap[source]?.playbackPreference ?? ['m3u8', 'mp4'] : ['m3u8', 'mp4']
 
 export const enabledProviders = providers.filter((provider) => provider.capabilities.detail)
 

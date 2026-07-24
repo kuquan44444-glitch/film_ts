@@ -18,7 +18,7 @@ const ophimAdapter: LegacyProviderAdapter = createProviderAdapter({
   label: 'OPhim',
   sourceButtonLabel: 'OPhim (legacy)',
   priority: 4,
-  playbackPreference: ['m3u8', 'embed'],
+  playbackPreference: ['m3u8'],
   capabilities: providerCapabilities({
     directMedia: true,
     requiresMediaResolver: false
