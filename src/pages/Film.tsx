@@ -4,13 +4,12 @@ import { Helmet } from 'react-helmet-async'
 import { useQuery } from 'react-query'
 import { Link, createSearchParams, useParams } from 'react-router-dom'
 import filmApis from 'src/apis/filmApis'
+import type { PlaybackMode } from 'src/apis/filmSourceAdapters'
 import { getPlaybackPreference } from 'src/apis/filmSourceAdapters'
 import { useQueryConfig } from 'src/hooks'
 import type { episodeData, episodeServer } from 'src/types'
 import PATH from 'src/utils/path'
 import FacebookShareButton from 'react-share/es/FacebookShareButton'
-
-type PlaybackMode = 'm3u8' | 'embed'
 
 type HlsInstance = {
   loadSource: (source: string) => void

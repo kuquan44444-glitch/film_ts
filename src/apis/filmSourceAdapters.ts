@@ -197,7 +197,7 @@ export const providerMap = providerAdapters.reduce<Record<movieSource, ProviderA
 export const providerOrder = providerAdapters.map((provider) => provider.key)
 export const optionProviderOrder: movieSource[] = ['kkphim', 'vsmov', 'ophim']
 
-export const getPlaybackPreference = (source?: movieSource) =>
+export const getPlaybackPreference = (source?: movieSource): PlaybackMode[] =>
   source ? providerMap[source]?.playbackPreference ?? ['embed', 'm3u8'] : ['embed', 'm3u8']
 
 export default providerAdapters
