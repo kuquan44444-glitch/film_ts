@@ -14,6 +14,9 @@ import {
 import providerAdapters, { optionProviderOrder, providerMap, providerOrder } from './filmSourceAdapters'
 import type { ProviderAdapter, ProviderSearchParams } from './filmSourceAdapters'
 import PATH from '../utils/path'
+import { aggregateHomeSections } from 'src/services/home-aggregation.service'
+import { aggregateSearchResults } from 'src/services/search-aggregation.service'
+import { aggregateLegacyItems, sortAggregatedEntries } from 'src/services/aggregation-shared'
 
 export type paramOption = {
   page?: string
@@ -24,6 +27,15 @@ export type paramOption = {
 }
 
 type ApiEnvelope<T> = Promise<{ data: data<T> }>
+type HomeSectionResponse = {
+  key: string
+  title: string
+  items: items[]
+}
+
+type HomeSectionsPayload = {
+  sections: HomeSectionResponse[]
+}
 
 const DEFAULT_IMAGE = '/img-error.webp'
 type SearchParams = ProviderSearchParams
@@ -714,6 +726,115 @@ const mergeFilmData = (films: film[]) => {
   }
 }
 
+type ProviderListResult = {
+  provider: ProviderAdapter
+  data: list
+}
+
+const getListByProvider = async (
+  provider: ProviderAdapter,
+  type: string,
+  params?: paramOption
+): Promise<ProviderListResult> => {
+  const response = await clients[provider.key].get<Record<string, unknown>>(provider.buildListEndpoint(type, params), {
+    params: provider.buildRequestParams(params)
+  })
+
+  return {
+    provider,
+    data: normalizeListResponse({
+      payload: response.data,
+      provider,
+      type,
+      params
+    })
+  }
+}
+
+const getSearchByProvider = async (provider: ProviderAdapter, params: SearchParams): Promise<ProviderListResult> => {
+  const response = await clients[provider.key].get<Record<string, unknown>>(provider.buildSearchEndpoint(), {
+    params: provider.buildRequestParams(params)
+  })
+
+  return {
+    provider,
+    data: normalizeListResponse({
+      payload: response.data,
+      provider,
+      type: PATH.search,
+      params
+    })
+  }
+}
+
+const buildAggregatedList = ({
+  sources,
+  type,
+  params,
+  message,
+  itemsOverride
+}: {
+  sources: ProviderListResult[]
+  type: string
+  params?: paramOption
+  message: string
+  itemsOverride?: items[]
+}) => {
+  const primarySource = sources[0]
+  const currentPage = toNumberValue(params?.page, 1)
+  const pageSize = Math.max(
+    ...sources.map((source) => source.data.params.pagination.totalItemsPerPage).filter(Boolean),
+    24
+  )
+  const sortedItems =
+    itemsOverride ||
+    sortAggregatedEntries(
+      aggregateLegacyItems(
+        sources
+          .flatMap((source) => source.data.items)
+          .map((item, index) => ({
+            item,
+            position: index
+          }))
+      ),
+      params?.sort_field || 'modified.time'
+    ).map((entry) => entry.item)
+  const totalItems = Math.max(
+    sortedItems.length + Math.max(currentPage - 1, 0) * pageSize,
+    sources.reduce((sum, source) => sum + source.data.params.pagination.totalItems, 0)
+  )
+  const aggregatedList: list = {
+    ...primarySource.data,
+    seoOnPage: {
+      ...primarySource.data.seoOnPage,
+      og_image: uniqueStrings([
+        ...primarySource.data.seoOnPage.og_image,
+        ...sortedItems.flatMap((item) => item.image_urls.poster).slice(0, 6),
+        ...sortedItems.flatMap((item) => item.image_urls.thumb).slice(0, 6)
+      ])
+    },
+    titlePage: primarySource.data.titlePage,
+    items: sortedItems.slice(0, pageSize),
+    params: {
+      ...primarySource.data.params,
+      type_slug: type,
+      filterCategory: params?.category ? [params.category] : [],
+      filterCountry: params?.country ? [params.country] : [],
+      filterYear: params?.year || '',
+      filterType: type,
+      sortField: params?.sort_field || primarySource.data.params.sortField,
+      pagination: {
+        totalItems,
+        totalItemsPerPage: pageSize,
+        currentPage,
+        pageRanges: Math.max(Math.ceil(totalItems / pageSize), currentPage)
+      }
+    }
+  }
+
+  return wrapData(aggregatedList, message)
+}
+
 const isAxios404 = (error: unknown) => {
   if (!isAxiosError(error)) return false
   return (error as AxiosError).response?.status === 404
@@ -762,45 +883,112 @@ const filmApis = {
       }
     })
   },
+  async getHomeSections(
+    params?: paramOption & { keyword?: string },
+    featuredYear?: string
+  ): ApiEnvelope<HomeSectionsPayload> {
+    const [featuredSeries, featuredOdd, latestOdd, latestSeries] = await Promise.all([
+      filmApis.getListFilm(PATH.series, {
+        ...params,
+        page: '1',
+        sort_field: 'view',
+        year: featuredYear || params?.year || ''
+      }),
+      filmApis.getListFilm(PATH.odd, {
+        ...params,
+        page: '1',
+        sort_field: 'view',
+        year: featuredYear || params?.year || ''
+      }),
+      filmApis.getListFilm(PATH.odd, {
+        ...params,
+        page: '1'
+      }),
+      filmApis.getListFilm(PATH.series, {
+        ...params,
+        page: '1'
+      })
+    ])
+
+    const aggregatedHome = await aggregateHomeSections({
+      sections: [
+        {
+          key: 'featured',
+          title: 'Phim đề cử',
+          items: [...featuredSeries.data.data.items.slice(0, 5), ...featuredOdd.data.data.items.slice(0, 5)],
+          maxItems: 10
+        },
+        {
+          key: 'latest-odd',
+          title: 'Phim lẻ mới cập nhật',
+          items: latestOdd.data.data.items,
+          maxItems: 10
+        },
+        {
+          key: 'latest-series',
+          title: 'Phim bộ mới cập nhật',
+          items: latestSeries.data.data.items,
+          maxItems: 10
+        }
+      ]
+    })
+
+    return wrapData(aggregatedHome, 'Đã tải trang chủ từ nhiều nguồn')
+  },
   async getListFilm(type: string, params?: paramOption): ApiEnvelope<list> {
-    return firstSuccessful({
-      sourceOrder: providerOrder,
-      executor: async (provider) => {
-        const response = await clients[provider.key].get<Record<string, unknown>>(
-          provider.buildListEndpoint(type, params),
-          {
-            params: provider.buildRequestParams(params)
-          }
-        )
-        return wrapData(
-          normalizeListResponse({
-            payload: response.data,
-            provider,
-            type,
-            params
-          }),
-          `Đã tải danh sách từ ${provider.label}`
-        )
+    const settledResults = await Promise.allSettled(
+      providerOrder.map(async (source) => getListByProvider(providerMap[source], type, params))
+    )
+    const successfulLists = settledResults.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []))
+
+    if (!successfulLists.length) {
+      const firstError = settledResults.find((result) => result.status === 'rejected')
+      if (firstError && firstError.status === 'rejected') {
+        throw firstError.reason
       }
+
+      throw new Error('Không thể tải dữ liệu từ các nguồn phim.')
+    }
+
+    return buildAggregatedList({
+      sources: successfulLists,
+      type,
+      params,
+      message: 'Đã tải danh sách từ nhiều nguồn'
     })
   },
   async getSearchFilm(params: SearchParams): ApiEnvelope<list> {
-    return firstSuccessful({
-      sourceOrder: providerOrder,
-      executor: async (provider) => {
-        const response = await clients[provider.key].get<Record<string, unknown>>(provider.buildSearchEndpoint(), {
-          params: provider.buildRequestParams(params)
-        })
-        return wrapData(
-          normalizeListResponse({
-            payload: response.data,
-            provider,
-            type: PATH.search,
-            params
-          }),
-          `Đã tải tìm kiếm từ ${provider.label}`
-        )
+    const settledResults = await Promise.allSettled(
+      providerOrder.map(async (source) => getSearchByProvider(providerMap[source], params))
+    )
+    const successfulLists = settledResults.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []))
+
+    if (!successfulLists.length) {
+      const firstError = settledResults.find((result) => result.status === 'rejected')
+      if (firstError && firstError.status === 'rejected') {
+        throw firstError.reason
       }
+
+      throw new Error('Không thể tải dữ liệu tìm kiếm từ các nguồn phim.')
+    }
+
+    const aggregatedSearch = await aggregateSearchResults({
+      keyword: params.keyword,
+      items: successfulLists.flatMap((source) => source.data.items)
+    })
+
+    return buildAggregatedList({
+      sources: successfulLists.map((source, index) => ({
+        ...source,
+        data: {
+          ...source.data,
+          items: index === 0 ? aggregatedSearch.items : []
+        }
+      })),
+      type: PATH.search,
+      params,
+      message: 'Đã tải tìm kiếm từ nhiều nguồn',
+      itemsOverride: aggregatedSearch.items
     })
   },
   async getFilm(slug: string): ApiEnvelope<film> {

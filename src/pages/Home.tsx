@@ -15,59 +15,17 @@ const Home = () => {
     []
   )
 
-  const { data: dataSeries } = useQuery({
-    queryKey: [
-      PATH.series,
-      {
-        ...queryConfig,
-        sort_field: 'view',
-        year: newYear
-      }
-    ],
-    queryFn: () =>
-      filmApis.getListFilm(PATH.series, {
-        ...queryConfig,
-        sort_field: 'view',
-        year: newYear
-      }),
-    staleTime: 3 * 60 * 1000,
-    keepPreviousData: true
-  })
-  const { data: dataOdd } = useQuery({
-    queryKey: [
-      PATH.odd,
-      {
-        ...queryConfig,
-        sort_field: 'view',
-        year: newYear
-      }
-    ],
-    queryFn: () =>
-      filmApis.getListFilm(PATH.odd, {
-        ...queryConfig,
-        sort_field: 'view',
-        year: newYear
-      }),
-    staleTime: 3 * 60 * 1000,
-    keepPreviousData: true
-  })
-  const { data: dataSeriesNew } = useQuery({
-    queryKey: [PATH.series, queryConfig],
-    queryFn: () => filmApis.getListFilm(PATH.series, queryConfig),
-    staleTime: 3 * 60 * 1000,
-    keepPreviousData: true
-  })
-  const { data: dataOddNew } = useQuery({
-    queryKey: [PATH.odd, queryConfig],
-    queryFn: () => filmApis.getListFilm(PATH.odd, queryConfig),
-    staleTime: 3 * 60 * 1000,
+  const { data } = useQuery({
+    queryKey: ['home-aggregate', queryConfig, newYear],
+    queryFn: () => filmApis.getHomeSections(queryConfig, newYear),
+    staleTime: 5 * 60 * 1000,
     keepPreviousData: true
   })
 
-  const dataFilmSeries = dataSeries?.data.data
-  const dataFilmOdd = dataOdd?.data.data
-  const dataFilmSeriesNew = dataSeriesNew?.data.data
-  const dataFilmOddNew = dataOddNew?.data.data
+  const homeSections = data?.data.data.sections || []
+  const featuredSection = homeSections.find((section) => section.key === 'featured')
+  const latestOddSection = homeSections.find((section) => section.key === 'latest-odd')
+  const latestSeriesSection = homeSections.find((section) => section.key === 'latest-series')
 
   return (
     <>
@@ -83,53 +41,20 @@ const Home = () => {
         <div className='mt-4'>
           {title({ title: 'Phim đề cử', isHiddenArrow: true })}
           <div className='grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-x-4 gap-y-[22px] py-3'>
-            <>
-              {dataFilmSeries ? (
-                dataFilmSeries.items.slice(0, 5).map((item) => <Card key={item._id} data={item} />)
-              ) : (
-                <>
-                  {Array(5)
-                    .fill(0)
-                    .map((_, i) => (
-                      <div key={i} className='flex flex-col animate-pulse'>
-                        <div className='h-[210px] sm:h-[384px] w-full mb-1 bg-slate-700' />
-                        <div className='h-2 w-[80%] mt-1 rounded-full bg-slate-700' />
-                        <div className='h-2 w-[60%] mt-2 rounded-full bg-slate-700' />
-                      </div>
-                    ))}
-                </>
-              )}
-              {dataFilmOdd ? (
-                dataFilmOdd.items.slice(0, 5).map((item) => <Card key={item._id} data={item} />)
-              ) : (
-                <>
-                  {Array(5)
-                    .fill(0)
-                    .map((_, i) => (
-                      <div key={i} className='flex flex-col animate-pulse'>
-                        <div className='h-[210px] sm:h-[384px] w-full mb-1 bg-slate-700' />
-                        <div className='h-2 w-[80%] mt-1 rounded-full bg-slate-700' />
-                        <div className='h-2 w-[60%] mt-2 rounded-full bg-slate-700' />
-                      </div>
-                    ))}
-                </>
-              )}
-            </>
+            {featuredSection ? featuredSection.items.map((item) => <Card key={item._id} data={item} />) : skeleton()}
           </div>
         </div>
         <div className='mt-8'>
           {title({ title: 'Phim lẻ mới cập nhật', titleSmall: 'Phim lẻ mới', link: `${PATH.odd}` })}
           <div className='grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-x-4 gap-y-[22px] py-3'>
-            {dataFilmOddNew
-              ? dataFilmOddNew.items.slice(0, 10).map((item) => <Card key={item._id} data={item} />)
-              : skeleton()}
+            {latestOddSection ? latestOddSection.items.map((item) => <Card key={item._id} data={item} />) : skeleton()}
           </div>
         </div>
         <div className='mt-8'>
           {title({ title: 'Phim bộ mới cập nhật', titleSmall: 'Phim bộ mới', link: `${PATH.series}` })}
           <div className='grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-x-4 gap-y-[22px] py-3'>
-            {dataFilmSeriesNew
-              ? dataFilmSeriesNew.items.slice(0, 10).map((item) => <Card key={item._id} data={item} />)
+            {latestSeriesSection
+              ? latestSeriesSection.items.map((item) => <Card key={item._id} data={item} />)
               : skeleton()}
           </div>
         </div>
